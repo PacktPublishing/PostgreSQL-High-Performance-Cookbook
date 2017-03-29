@@ -1,0 +1,122 @@
+CHAPTER 7
+
+Setting up Barman
+
+        yum install barman
+        apt-get install barman
+        ssh-keygen -t rsa -N ' '
+        ssh-copy-id postgres@pg-primary
+        ssh-keygen -t rsa -N ' '
+        ssh-copy-id barman@pg-backup
+        host all postgres pg-backup md5
+        archive_mode = on
+        archive_command = 'rsync -aq %p \ barman@pgbackup:primary/incoming/%f'
+        *:*:*:postgres:postgres-password
+        pg_ctl -D /db/pgdata restart
+        [primary]
+        description = "Primary PostgreSQL Server"
+        conninfo = "host=pg-primary user=postgres"
+        ssh_command = "ssh postgres@pg-primary"
+        barman check primary
+
+Backup and recovery using Barman
+
+        barman backup primary
+        barman list-backup primary
+        barman show-backup primary latest
+        barman list-files primary latest
+        ssh-copy-id postgres@pg-clone
+        rm -Rf /db/pgdata
+        barman recover --remote-ssh-command "ssh postgres@pg-clone"
+        primary latest /db/pgdata
+        pg_ctl -D /db/pgdata start
+
+Setting up OmniPITR
+
+        $ git clone git://github.com/omniti-labs/omnipitr.git
+        $ /opt/omnipitr/bin/sanity-check.sh
+        Checking:
+        - /opt/omnipitr/bin
+        - /opt/omnipitr/lib
+        5 programs, 9 libraries.
+        All checked, and looks ok.
+
+WAL management with OmniPITR
+
+        archive_mode = on
+        archive_command = '/opt/omnipitr/bin/omnipitr-archive -l
+        /home/postgres/omnipitr/log/omnipitr-^Y^m^d.log -s
+        /home/postgres/omnipitr/state -dr gzip=rsync://slave/wal_archive/
+        -dr
+        gzip=rsync://backup/database/xlog/ -db /var/tmp/omnipitr/dstbackup
+        -t
+        /var/tmp/omnipitr/ -v "%p"'
+        archive_timeout = 60
+        pg_ctl -D /home/postgres/data restart
+
+Setting up repmgr
+
+        sudo yum install repmgr
+        sudo apt-get install repmgr postgresql-9.4-repmgr
+        sudo rm -f /etc/init.d/repmgrd
+        sudo chmod 755 /etc/init.d/repmgr
+        ssh-keygen -t rsa -N ' '
+        ssh-copy-id postgres@pg-clone
+        wal_level = hot_standy
+        archive_mode = on
+        archive_command = 'exit 0'
+        wal_keep_segments = 5000
+        hot_standby = on
+        host all postgres 192.168.56.0/24 trust
+        host replication postgres 192.168.56.0/24 trust
+        pg_ctl -D /data restart
+        pg_config -bindir
+        cluster=pgnet
+        node=1
+        node_name=parent
+        conninfo='host=pg-primary dbname=postgres'
+        pg_bindir=[PostgreSQL binary path]
+        repmgr -f /etc/repmgr.conf master register
+        sudo service repmgr start
+
+Using repmgr to create replica
+
+        ssh-keygen -t rsa -N ' '
+        ssh-copy-id postgres@pg-primary
+        repmgr -D /data standby clone pg-primary
+        pg_ctl -D /data start
+        pg_config --bindir
+        cluster=pgnet
+        node=2
+        node_name=child1
+        conninfo='host=pg-clone dbname=postgres'
+        pg_bindir=[value from step 4]
+        repmgr -f /etc/repmgr.conf standby register
+        sudo service repmgr start
+        SELECT standby_node, standby_name, replication_lag FROM
+        repmgr_pgnet.repl_status;
+
+Setting up walctl
+
+        git clone https://github.com/OptionsHouse/walctl
+        cd walctl
+        sudo make install
+        sudo mkdir -m 0600 /db/wal_archive sudo chown postgres:postgres
+        /db/wal_archive
+        ssh-keygen -t rsa -N ' '
+        ssh-copy-id pg-arc
+        ssh-copy-id pg-clone
+        ssh-keygen -t rsa -N ' ' ssh-copy-id pg-arc ssh-copy-id pg-primary
+        CREATE USER walctl WITH PASSWORD 'superb' SUPERUSER REPLICATION;
+        host replication walctl pg-clone md5
+        host replication walctl pg-arc md5
+        *:*:*:walctl:superb
+        PGDATA=/data
+        ARC_HOST=pg-arc
+        ARC_PATH=/db/wal_archive
+        walctl_setup master
+        pg_ctl -D /data restart
+
+Using Walctl to create replica
+
+        walctl_clone pg-primary walctl

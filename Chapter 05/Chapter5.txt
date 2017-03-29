@@ -1,0 +1,322 @@
+CHAPTER 5
+
+Installing pgpool-II
+
+            apt-get install pgpool2
+            yum install pgpool*
+            tar -xzf pgpool-II-3.4.0.tar.gz
+            cd pgpool-II-3.4.0
+            ./configure --prefix=/usr --sysconfdir=/etc/pgpool/
+            make
+            make install
+            mkdir /var/log/pgpool
+            chown postgres:postgres /var/log/pgpool
+            mkdir /var/run/pgpool
+            chown postgres:postgres /var/run/pgpool
+
+Configuring pgpool and testing the setup
+
+            cd /etc/pgpool/
+            cp pgpool.conf.sample-stream pgpool.conf
+            cp pcp.conf.sample etc/pcp.conf
+            /usr/bin/pg_md5 postgres
+            e8a48653851e28c69d0506508fb27fc5
+            vi /etc/pcp.conf
+            postgres:e8a48653851e28c69d0506508fb27fc5
+
+            listen_addresses = '*'
+            port = 9999
+            backend_hostname0 = 'localhost'
+            backend_port0 = 5432
+            backend_weight0 = 1
+            backend_data_directory0 = '/var/lib/pgsql/9.6/data'
+            connection_cache = on
+            max_pool = 10
+            num_init_children = 20
+            pgpool -f /etc/pgpool.conf -F /etc/pcp.conf
+            psql -p 9999 postgres postgres
+
+Installing PgBouncer
+
+            apt-get install pgbouncer
+            yum install pgbouncer
+            tar -xzf pgbouncer-1.5.4.tar.gz
+            cd pgbouncer-1.5.4
+            ./configure --prefix=/usr
+            make & make install
+            mkdir /var/log/pgbouncer
+            cd /var/log/pgbouncer
+            chown postgres:postgres pgbouncer
+            mkdir /var/run/pgbouncer
+            chown postgres:postgres /var/run/pgbouncer
+            mkdir /etc/pgbouncer
+            cp etc/pgbouncer.ini /etc/pgbouncer
+            chown -R postgres:psgtes /etc/pgbouncer
+
+Connection pooling using PgBouncer
+
+            vi /etc/pgbouncer/pgbouncer.ini
+            postgres = host=localhost dbname=postgres
+            pgtest = host=localhost dbname=pgtest
+            listen_addr = *
+            auth_file = /etc/pgbouncer/userlist.txt
+            auth_type = md5
+
+            postgres=# CREATE role author LOGIN PASSWORD 'author' SUPERUSER;
+            CREATE ROLE
+            postgres=# select rolname ,rolpassword from pg_authid where
+            rolname='author';
+            rolname | rolpassword
+            ---------+-------------------------------------
+            author | md5d50afb6ec7b2501164b80a0480596ded
+            (1 row)
+
+            vi /etc/pgbouncer/userlist.txt
+            "author" "md5d50afb6ec7b2501164b80a0480596ded"
+
+            service pgbouncer start
+            pgbouncer -d /etc/pgbouncer/pgbouncer.ini
+            psql -h localhost -p 6432 -d postgres -U author -W
+            createdb pgtest
+            pgbench -i -s 10 pgtest
+            bash-3.2$ pgbench -t 1000 -c 20 -S pgtest
+            starting vacuum...end.
+            transaction type: SELECT only
+
+            bash-3.2$ pgbench -t 1000 -c 20 -S -p 6432 -U author -P author
+            pgtest
+            starting vacuum...end.
+            transaction type: SELECT only
+
+Managing PgBouncer
+
+            vi /etc/pgbouncer/pgbouncer.ini
+            admin_users = author
+            service pgbouncer restart
+
+Implementing partitioning
+
+            CREATE TABLE country_log (
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+            country_code char(2),
+            content text
+            );
+            CREATE INDEX country_code_idx ON country_log USING btree
+            (country_code);
+
+            CREATE TABLE country_log_ru ( CHECK ( country_code = 'ru') )
+            INHERITS (country_log);
+            CREATE TABLE country_log_sa ( CHECK ( country_code = 'sa' ) )
+            INHERITS (country_log);
+
+            CREATE INDEX country_code_ru_idx ON country_log_ru
+            USING btree (country_code);
+            CREATE INDEX country_code_sa_idx ON country_log_sa
+            USING btree (country_code);
+
+            CREATE OR REPLACE FUNCTION country_insert_trig() RETURNS TRIGGER AS
+            $$
+            BEGIN
+            IF ( NEW.country_code = 'ru' ) THEN
+            INSERT INTO country_log_ru VALUES (NEW.*);
+            ELSIF ( NEW.country_code = 'sa' ) THEN
+            INSERT INTO country_log_sa VALUES (NEW.*);
+            ELSE
+            RAISE EXCEPTION 'Country unknown';
+            END IF;
+            RETURN NULL;
+            END;
+            $$ LANGUAGE plpgsql;
+
+            CREATE TRIGGER country_insert
+            BEFORE INSERT ON country_log
+            FOR EACH ROW EXECUTE PROCEDURE country_insert_trig();
+
+            postgres=# INSERT INTO country_log (country_code, content)
+            VALUES ('ru', 'content-ru');
+            postgres=# INSERT INTO country_log (country_code, content)
+            VALUES ('sa', 'content-sa');
+
+            postgres=# SELECT * from country_log;
+            created_at | country_code | content
+            -------------------------------+--------------+------------
+            2014-11-30 12:10:06.123189-08 | ru | content-ru
+            2014-11-30 12:10:14.22666-08 | sa | content-sa
+            (2 rows)
+            postgres=# select * from country_log_ru;
+            created_at | country_code | content
+            -------------------------------+--------------+------------
+            2014-11-30 12:10:06.123189-08 | ru | content-ru
+            (1 row)
+            postgres=# select * from country_log_sa;
+            created_at | country_code | content
+            ------------------------------+--------------+------------
+            2014-11-30 12:10:14.22666-08 | sa | content-sa
+            (1 row)
+
+Managing partitions
+
+            postgres=# SELECT * from country_log;
+            created_at | country_code | content
+            -------------------------------+--------------+------------
+            2014-11-30 12:10:06.123189-08 | ru | content-ru
+            2014-11-30 12:10:14.22666-08 | sa | content-sa
+            (2 rows)
+
+            postgres=# drop table country_log_sa;
+            DROP TABLE
+
+            postgres=# select * from country_log;
+            created_at | country_code | content
+            -------------------------------+--------------+------------
+            2014-11-30 14:41:40.742878-08 | ru | content-ru
+
+            postgres=# select * from country_log;
+            created_at | country_code | content
+            -------------------------------+--------------+------------
+            2014-11-30 14:41:40.742878-08 | ru | content-ru
+
+            postgres=# CREATE TABLE country_log_sa ( ) INHERITS (country_log);
+            CREATE TABLE
+            postgres=# CREATE INDEX country_code_sa_idx ON country_log_sa USING
+            btree (country_code);
+            CREATE INDEX;
+
+            CREATE OR REPLACE FUNCTION country_insert_trig() RETURNS TRIGGER AS
+            $$
+            BEGIN
+            IF ( NEW.country_code = 'ru' ) THEN
+            INSERT INTO country_log_ru VALUES (NEW.*);
+            ELSIF ( NEW.country_code = 'sa' ) THEN
+            INSERT INTO country_log_sa VALUES (NEW.*);
+            ELSE
+            INSERT INTO country_log_default VALUES (NEW.*);
+            END IF;
+            RETURN NULL;
+            END;
+            $$ LANGUAGE plpgsql;
+
+            postgres=# INSERT INTO country_log (country_code, content) VALUES
+            ('dk', 'content-dk');
+            INSERT 0 0
+            postgres=# INSERT INTO country_log (country_code, content) VALUES
+            ('us', 'content-us');
+            INSERT 0 0
+
+            postgres=# select * from country_log;
+            created_at | country_code | content
+            -------------------------------+--------------+------------
+            2014-11-30 14:41:40.742878-08 | ru | content-ru
+            2014-11-30 15:10:28.921124-08 | dk | content-dk
+            2014-11-30 15:10:42.97714-08 | us | content-us
+            postgres=# select * from country_log_default;
+            created_at | country_code | content
+            -------------------------------+--------------+------------
+            2014-11-30 15:10:28.921124-08 | dk | content-dk
+            2014-11-30 15:10:42.97714-08 | us | content-us
+            (2 rows)
+
+Installing PL/Proxy
+
+            tar xvfz plproxy-2.5.tar.gz
+            cd plproxy-2.5
+            make && make install
+
+Partitioning with PL/Proxy
+
+            postgres=# create database nodes;
+            postgres=# create database nodes_0000;
+            postgres=# create database nodes_0001;
+            psql -d nodes
+            nodes=# create extension plproxy;
+            nodes=# create schema plproxy;
+
+            cd /usr/pgsql-9.6/share/extension
+            psql -f plproxy--2.5.0.sql nodes
+            CREATE FUNCTION
+            CREATE LANGUAGE
+            CREATE FUNCTION
+            CREATE FOREIGN DATA WRAPPER
+
+            psql -d nodes
+            CREATE OR REPLACE FUNCTION plproxy.get_cluster_version(cluster_name
+            text)
+            RETURNS int AS $$
+            BEGIN
+            IF cluster_name = 'nodes' THEN
+            RETURN 1;
+            END IF;
+            END;
+            $$ LANGUAGE plpgsql;
+            CREATE OR REPLACE FUNCTION
+            plproxy.get_cluster_partitions(cluster_name
+            text) RETURNS SETOF text AS $$
+            BEGIN
+            IF cluster_name = 'nodes' THEN
+            RETURN NEXT 'host=127.0.0.1 dbname=nodes_0000';
+            RETURN NEXT 'host=127.0.0.1 dbname=nodes_0001';
+            RETURN;
+            END IF;
+            RAISE EXCEPTION 'no such cluster: %', cluster_name;
+            END;
+            $$ LANGUAGE plpgsql SECURITY DEFINER;
+            CREATE OR REPLACE FUNCTION plproxy.get_cluster_config (cluster_name
+            text,
+            out key text, out val text)
+            RETURNS SETOF record AS $$
+            BEGIN
+            RETURN;
+            END;
+            $$ LANGUAGE plpgsql;
+
+            psql -d nodes_0000
+            nodes_0000=# CREATE TABLE users (username text PRIMARY KEY);
+            psql -d nodes_0001
+            nodes_0001=# CREATE TABLE users (username text PRIMARY KEY);
+
+            psql -d nodes_0000
+            CREATE OR REPLACE FUNCTION insert_user(i_username text) RETURNS
+            text AS $$
+            BEGIN
+            PERFORM 1 FROM users WHERE username = i_username;
+            IF NOT FOUND THEN
+            INSERT INTO users (username) VALUES (i_username);
+            RETURN 'user created';
+            ELSE
+            RETURN 'user already exists';
+            END IF;
+            END;
+            $$ LANGUAGE plpgsql SECURITY DEFINER;
+            psql -d nodes_0001
+            CREATE OR REPLACE FUNCTION insert_user(i_username text) RETURNS
+            text AS $$
+            BEGIN
+            PERFORM 1 FROM users WHERE username = i_username;
+            IF NOT FOUND THEN
+            INSERT INTO users (username) VALUES (i_username);
+            RETURN 'user created';
+            ELSE
+            RETURN 'user already exists';
+            END IF;
+            END;
+            $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+            psql -d nodes
+            CREATE OR REPLACE FUNCTION insert_user(i_username text) RETURNS
+            TEXT AS $$
+            CLUSTER 'nodes'; RUN ON hashtext(i_username);
+            $$ LANGUAGE plproxy;
+
+            nodes=#SELECT insert_user('user_number_'||generate_series::text)
+            FROM generate_series(1,10000);
+
+            nodes_0000=# select count(*) from users;
+            count
+            -------
+            5106
+            (1 row)
+            nodes_0001=# select count(*) from users;
+            count
+            -------
+            4894
+            (1 row)

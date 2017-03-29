@@ -1,0 +1,329 @@
+CHAPTER 12
+
+Measuring query and index block statistics
+
+            benchmarksql=# SELECT indexrelid::regclass FROM
+            pg_index WHERE indisprimary IS FALSE AND
+            indrelid::regclass::text='bmsql_item' LIMIT
+            1;
+            indexrelid
+            ------------
+            pric_idx
+            (1 row)
+
+            benchmarksql=# SELECT pg_stat_reset();
+            pg_stat_reset
+            ---------------
+            (1 row)
+
+            benchmarksql=# EXPLAIN ANALYZE SELECT COUNT(*)
+            FROM bmsql_item WHERE i_price BETWEEN 1 AND 10;
+            QUERY PLAN
+            -----------------------------------------------
+            ------------------------------------------------
+            ---------------------------------
+            Aggregate (cost=1649.57..1649.58 rows=1 width=8)
+
+            benchmarksql=# SELECT idx_scan, idx_tup_read, idx_tup_fetch,
+            idx_blks_read, idx_blks_hit
+            FROM pg_stat_user_indexes psui, pg_statio_user_indexes
+            psiui WHERE
+            psui.relid=psiui.relid AND psui.indexrelid=psiui.indexrelid AND
+            psui.indexrelid='pric_idx'::regclass;
+            -[ RECORD 1 ]-+-----
+            idx_scan | 2
+            idx_tup_read | 9022
+            idx_tup_fetch | 1
+            idx_blks_read | 28
+            idx_blks_hit | 2
+
+            benchmarksql=# SELECT relpages, reltuples FROM pg_class WHERE relname =
+            'pric_idx';
+            -[ RECORD 1 ]-----
+            relpages | 276
+            reltuples | 100000
+
+            benchmarksql=# SELECT max(i_price), min(i_price) FROM bmsql_item;
+            max | min
+            --------+------
+            100.00 | 1.00
+            (1 row)
+
+            benchmarksql=# SELECT pg_stat_reset();
+            pg_stat_reset
+            ---------------
+            (1 row)
+
+            benchmarksql=# EXPLAIN ANALYZE SELECT COUNT(*) FROM bmsql_item WHERE
+            i_price BETWEEN 1 AND 100;
+            QUERY PLAN
+            -----------------------------------------------------------------------
+            Aggregate (cost=3049.00..3049.01 rows=1 width=8) (actual
+            time=41.861..41.861 rows=1 loops=1)
+            -> Seq Scan on bmsql_item (cost=0.00..2799.00 rows=100000 width=0)
+            (actual time=0.011..34.318 rows=100000 loops=1)
+            Filter: ((i_price >= '1'::numeric) AND (i_price <= '100'::numeric))
+            Planning time: 0.164 ms
+            Execution time: 41.885 ms
+            (5 rows)
+
+            benchmarksql=# SELECT idx_scan
+            FROM
+            pg_stat_user_indexes psui, pg_statio_user_indexes psiui
+            WHERE psui.relid=psiui.relid AND psui.indexrelid=psiui.indexrelid AND
+            psui.indexrelid = 'pric_idx'::regclass;
+            -[ RECORD 1 ]-+--
+            idx_scan | 2
+
+Index lookup
+
+            benchmarksql=# SELECT pg_stat_reset();
+            pg_stat_reset
+            ---------------
+            (1 row)
+
+            benchmarksql=# SET enable_bitmapscan TO off;
+            SET
+            benchmarksql=# EXPLAIN ANALYZE SELECT * FROM bmsql_item WHERE i_price = 1;
+            QUERY PLAN
+            ---------------------------------------------------------------------------
+            ---------------------------------------------
+            Index Scan using pric_idx1 on bmsql_item (cost=0.29..32.41 rows=7
+            width=72) (actual time=0.019..0.026 rows=7 loops=1)
+            Index Cond: (i_price = '1'::numeric)
+            Planning time: 0.650 ms
+            Execution time: 0.049 ms
+            (4 rows)
+
+            benchmarksql=# SELECT idx_scan, idx_tup_fetch FROM pg_stat_user_tables
+            WHERE relname = 'bmsql_item';
+            idx_scan | idx_tup_fetch
+            ---------+---------------
+            1 | 7
+            (1 row)
+
+            benchmarksql=# EXPLAIN ANALYZE SELECT * FROM bmsql_item WHERE i_price = 1;
+            QUERY PLAN
+            ---------------------------------------------------------------------------
+            ---------------------------------------
+            Bitmap Heap Scan on bmsql_item (cost=4.35..30.89 rows=7 width=72) (actual
+            time=18.373..48.416 rows=7 loops=1)
+            Recheck Cond: (i_price = '1'::numeric)
+            Heap Blocks: exact=7
+            -> Bitmap Index Scan on pric_idx1 (cost=0.00..4.35 rows=7 width=0)
+            (actual time=0.328..0.328 rows=7 loops=1)
+            Index Cond: (i_price = '1'::numeric)
+            Planning time: 125.660 ms
+            Execution time: 48.515 ms
+            (7 rows)
+
+            benchmarksql=# SELECT idx_scan, idx_tup_fetch, idx_tup_read
+            FROM
+            pg_stat_user_indexes
+            WHERE indexrelname = 'pric_idx1';
+            -[ RECORD 1 ]-+--
+            idx_scan | 1
+            idx_tup_fetch | 0
+            idx_tup_read | 7
+
+            benchmarksql=# EXPLAIN ANALYZE SELECT i_price FROM bmsql_item WHERE i_price
+            = 1;
+            QUERY PLAN
+            ---------------------------------------------------------------------------
+            -------------------------------------------------
+            Index only scan using pric_idx1 on bmsql_item (cost=0.29..32.41 rows=7
+            width=6) (actual time=0.018..0.025 rows=7 loops=1)
+            Index Cond: (i_price = '1'::numeric)
+            Heap Fetches: 7
+            Planning time: 0.598 ms
+            Execution time: 0.047 ms
+            (5 rows)
+
+            benchmarksql=# VACUUM bmsql_item;
+            VACUUM
+            benchmarksql=# EXPLAIN ANALYZE SELECT i_price FROM bmsql_item WHERE i_price
+            = 1;
+            QUERY PLAN
+            ---------------------------------------------------------------------------
+            ------------------------------------------------
+            Index Only Scan using pric_idx1 on bmsql_item (cost=0.29..4.42 rows=7
+            width=6) (actual time=0.017..0.019 rows=7 loops=1)
+            Index Cond: (i_price = '1'::numeric)
+            Heap Fetches: 0
+            Planning time: 0.674 ms
+            Execution time: 0.040 ms
+            (5 rows)
+
+Comparing indexed scans and sequential scans
+
+            benchmarksql=# SELECT pg_relation_filepath('pric_idx');
+            pg_relation_filepath
+            ----------------------
+            base/12439/16545
+            (1 row)
+
+            benchmarksql=# SELECT pg_relation_filepath('bmsql_item');
+            pg_relation_filepath
+            ----------------------
+            base/12439/16417
+            (1 row)
+
+            $ inotifywait -m -e access base/12439/16417 base/12439/16545
+            Setting up watches.
+            Watches established.
+
+            SELECT * FROM bmsql_item;
+            Output of inotifywait
+            base/12439/16545 ACCESS
+            base/12439/16417 ACCESS
+
+            SELECT * FROM bmsql_item WHERE i_price = 1;
+            Output of inotifywait
+            base/12439/16545 ACCESS
+            base/12439/16417 ACCESS
+
+            SELECT i_price FROM bmsql_item WHERE i_price = 1;
+            Output of inotifywait
+            base/12439/16545 ACCESS
+            base/12439/16417 ACCESS
+
+Clustering against an index
+
+            benchmarksql=# CLUSTER bmsql_item USING pric_idx;
+            CLUSTER
+            benchmarksql=# ANALYZE bmsql_item;
+            ANALYZE
+
+Concurrent indexes
+
+            benchmarksql=# CREATE INDEX data_idx ON bmsql_item(i_data);
+            CREATE INDEX
+            benchmarksql=# SELECT seq_scan,seq_tup_read FROM pg_stat_user_tables WHERE
+            relname = 'bmsql_item';
+            seq_scan | seq_tup_read
+            ----------+--------------
+            1 | 100000
+            (1 row)
+            
+            benchmarksql=# CREATE INDEX CONCURRENTLY data_idx ON bmsql_item(i_data);
+            CREATE INDEX
+            benchmarksql=# SELECT seq_scan,seq_tup_read FROM pg_stat_user_tables WHERE
+            relname = 'bmsql_item';
+            seq_scan | seq_tup_read
+            ----------+--------------
+            2 | 200000
+            (1 row)
+
+            SELECT COUNT(*) FROM pg_index WHERE indisvalid IS FALSE;
+
+Combined indexes
+
+            benchmarksql=# EXPLAIN SELECT * FROM bmsql_item WHERE i_data = 'Item Name'
+            OR i_price = 3;
+            QUERY PLAN
+            ---------------------------------------------------------------------------
+            ---------
+            Bitmap Heap Scan on bmsql_item (cost=8.82..60.67 rows=14 width=71)
+            Recheck Cond: (((i_data)::text = 'Item Name'::text) OR (i_price =
+            '3'::numeric))
+            -> BitmapOr (cost=8.82..8.82 rows=14 width=0)
+            -> Bitmap Index Scan on data_idx (cost=0.00..4.45 rows=4 width=0)
+            Index Cond: ((i_data)::text = 'Item Name'::text)
+            -> Bitmap Index Scan on price_idx (cost=0.00..4.37 rows=10 width=0)
+            Index Cond: (i_price = '3'::numeric)
+            (7 rows)
+
+Partial indexes
+
+            benchmarksql=# CREATE INDEX CONCURRENTLY part_idx ON bmsql_item(i_price)
+            WHERE i_price BETWEEN 5 AND 10;
+            CREATE INDEX
+
+            benchmarksql=# EXPLAIN SELECT * FROM bmsql_item WHERE i_price BETWEEN 5 AND
+            10;
+            QUERY PLAN
+            ---------------------------------------------------------------------------
+            ------
+            Index Scan using part_idx on bmsql_item (cost=0.28..206.97 rows=4979
+            width=72)
+            (1 row)
+
+            benchmarksql=# PREPARE params(int, int) AS SELECT * FROM bmsql_item WHERE
+            i_price BETWEEN $1 AND $2;
+            PREPARE
+            benchmarksql=# EXPLAIN EXECUTE params(4, 6);
+            QUERY PLAN
+            ---------------------------------------------------------------------
+            Seq Scan on bmsql_item (cost=0.00..2800.00 rows=2035 width=72)
+            Filter: ((i_price >= '4'::numeric) AND (i_price <= '6'::numeric))
+            (2 rows)
+            benchmarksql=# EXPLAIN EXECUTE params(5, 6);
+            QUERY PLAN
+            ---------------------------------------------------------------------------
+            -----
+            Index Scan using part_idx on bmsql_item (cost=0.28..50.87 rows=1005
+            width=72)
+            Index Cond: (i_price <= '6'::numeric)
+            (2 rows)
+
+Finding unused indexes
+
+            benchmarksql=# SELECT
+            indrelid::regclass tab_name,pi.indexrelid::regclass
+            unused_index
+            FROM
+            pg_index pi, pg_stat_user_indexes psui
+            WHERE pi.indexrelid=psui.indexrelid AND NOT indisunique AND
+            0idx_scan=0;
+            tab_name | unused_index
+            ----------------+---------------------
+            bmsql_customer | bmsql_customer_idx1
+            bmsql_district | d_state_idx
+            bmsql_item | pric_idx
+            bmsql_customer | zip_idx
+            bmsql_item | pric_idx1
+
+            UPDATE pg_index SET indisvalid = false
+            WHERE indexrelid::regclass::text IN ( < Unused indexes > );
+
+Forcing a query to use an index
+
+            benchmarksql=# EXPLAIN ANALYZE SELECT COUNT(*) FROM bmsql_item WHERE
+            i_price BETWEEN 10 AND 80;
+            QUERY PLAN
+            ---------------------------------------------------------------------------
+            -------------------------------------------
+            Aggregate (cost=2976.67..2976.68 rows=1 width=8) (actual
+            time=47.900..47.900 rows=1 loops=1)
+            -> Seq Scan on bmsql_item (cost=0.00..2800.00 rows=70669 width=0)
+            (actual time=3.341..40.537 rows=70947 loops=1)
+            Filter: ((i_price >= '10'::numeric) AND (i_price <= '80'::numeric))
+            Rows Removed by Filter: 29053
+            Planning time: 0.168 ms
+            Execution time:
+
+            benchmarksql=# SET random_page_cost TO 0.9;
+            SET
+            benchmarksql=# EXPLAIN ANALYZE SELECT COUNT(*) FROM bmsql_item WHERE
+            i_price BETWEEN 10 AND 80;
+            QUERY PLAN
+            ---------------------------------------------------------------------------
+            ------------------------------------------------------------------
+            Aggregate (cost=2685.65..2685.66 rows=1 width=8) (actual
+            time=34.134..34.134 rows=1 loops=1)
+            -> Index Only Scan using pric_idx1 on bmsql_item (cost=0.29..2508.97
+            rows=70669 width=0) (actual time=0.054..27.760 rows=70947 loops=1)
+            Index Cond: ((i_price >= '10'::numeric) AND (i_price <= '80'::numeric))
+            Heap Fetches: 70947
+            Planning time: 0.187 ms
+            Execution time: 34.176 ms
+            (6 rows)
+
+Detecting a missing index
+
+            benchmarksql=# SELECT relname, seq_scan-idx_scan delta FROM
+            pg_stat_user_tables WHERE seq_scan-idx_scan >0;
+            relname | delta
+            ------------+-------
+            bmsql_item | 8
+            (1 row)

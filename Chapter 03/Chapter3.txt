@@ -1,0 +1,18 @@
+CHAPTER 3
+
+Identifying checkpoint overhead
+
+                SELECT * FROM pg_stat_activity WHERE wait_event = 'CheckpointLock';
+                postgres=# CREATE EXTENSION pg_buffercache;
+                CREATE EXTENSION
+                postgres=# SELECT * FROM pg_buffercache LIMIT 1;
+                -[ RECORD 1 ]----+-----
+                bufferid | 1
+                relfilenode | 1262
+                reltablespace | 1664
+                reldatabase | 0
+                relforknumber | 0
+                relblocknumber | 0
+                isdirty | f
+                usagecount | 5
+                pinning_backends | 0

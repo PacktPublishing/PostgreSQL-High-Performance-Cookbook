@@ -1,0 +1,242 @@
+CHAPTER 1
+
+CPU benchmarking
+
+                $ phoronix-test-suite benchmark pts/himeno
+                Phoronix Test Suite v6.8.0
+                To Install: pts/himeno-1.2.0
+                ...
+                1 Test To Install
+                pts/himeno-1.2.0:
+                Test Installation 1 of 1
+                1 File Needed
+                Downloading: himenobmtxpa.tar.bz2
+                Started Run 2 @ 05:53:40
+                Started Run 3 @ 05:54:35 [Std. Dev: 1.66%]
+                Test Results:
+                1503.636072
+                1512.166077
+                1550.985494
+                Average: 1522.26 MFLOPS
+
+                [root@localhost ~]# sysbench --test=CPU --CPU-max-prime=10000 --numthreads=
+                4 run
+                Doing CPU performance benchmark
+                Threads started!
+                Done.
+                Maximum prime number checked in CPU test: 10000
+                Test execution summary:
+                total time: 3.2531s
+                total number of events: 10000
+                total time taken by event execution: 13.0040
+                per-request statistics:
+                min: 1.10ms
+                avg: 1.30ms
+                max: 8.60ms
+                approx. 95 percentile: 1.43ms
+                Threads fairness:
+                events (avg/stddev): 2500.0000/8.46
+
+Memory benchmarking
+
+                $ phoronix-test-suite benchmark pts/memory
+                Phoronix Test Suite v6.8.0
+                Installed: pts/ramspeed-1.4.0
+                To Install: pts/stream-1.3.1
+                To Install: pts/cachebench-1.0.0
+
+                # mkdir -p /memmount
+                # mount -t tmpfs -o size=1g tmpfs /memmount
+                # df -kh -t tmpfs
+                Filesystem Size Used Avail Use% Mounted on
+                tmpfs 1.9G 96K 1.9G 1% /dev/shm
+                tmpfs 1.9G 8.9M 1.9G 1% /run
+                tmpfs 1.9G 0 1.9G 0% /sys/fs/cgroup
+                tmpfs 1.0G 0 1.0G 0% /memmount
+
+                # mkdir -p /memmount/memtabspace
+                # chown -R postgres:postgres /memmount/memtabspace/
+                postgres=# CREATE TABLESPACE memtbs LOCATION '/memmount/memtabspace';
+                CREATE TABLESPACE
+                postgres=# CREATE TABLE memtable(t INT) TABLESPACE memtbs;
+                CREATE TABLE
+
+                postgres=# INSERT INTO memtable VALUES(generate_series(1, 1000000));
+                INSERT 0 1000000
+                Time: 1372.763 ms
+                postgres=# SELECT
+                pg_size_pretty(pg_relation_size('memtable'::regclass));
+                pg_size_pretty 
+                ----------------
+                35 MB (1 row)
+
+                postgres=# SELECT COUNT(*) FROM memtable;
+                count
+                ---------
+                1000000
+                (1 row)
+                Time: 87.333 ms
+
+Disk benchmarking
+
+                $ phoronix-test-suite benchmark pts/disk
+                $ phoronix-test-suite benchmark pts/iozone
+                Phoronix Test Suite v6.8.0
+                Installed: pts/iozone-1.8.0
+                Disk Test Configuration
+                1: 4Kb
+                2: 64Kb
+                3: 1MB
+                4: Test All Options
+                Record Size: 1
+                1: 512MB
+                2: 2GB
+                3: 4GB
+                4: 8GB
+                5: Test All Options
+                File Size: 1
+                1: Write Performance
+                2: Read Performance
+                3: Test All Options
+                Disk Test: 3
+
+                $ /usr/local/sbin/bonnie++ -D -d /tmp/ -s 8G -b
+                Writing with putc()...done
+                Writing intelligently...done
+                ...
+                localhost.localdomain,8G,68996,106,14151,53,46772,15,95343,93,123633,16,201
+                .0,7,16,795,58,+++++,+++,733,46,757,57,+++++,+++,592,38
+
+                $ echo
+                "localhost.localdomain,8G,68996,106,14151,53,46772,15,95343,93,123633,16,20
+                1.0,7,16,795,58,+++++,+++,733,46,757,57,+++++,+++,592,38"|bon_csv2html >
+                ~/Desktop/bonresults.html
+
+Performing a seek rate test
+
+                # ioping -R /dev/sda3 -s 8k -w 30
+                --- /dev/sda3 (block device 65.8 GiB) ioping statistics ---
+                2.23 k requests completed in 29.2 s, 17.5 MiB read, 76 iops, 613.4
+                KiB/s
+                generated 2.24 k requests in 30.0 s, 17.5 MiB, 74 iops, 596.2 KiB/s
+                min/avg/max/mdev = 170.6 us / 13.0 ms / 73.5 ms / 5.76 ms
+
+                $ ioping -G /tmp/ -D -s 8k
+                8 KiB >>> /tmp/ (xfs /dev/sda3): request=1 time=1.50 ms (warmup)
+                8 KiB <<< /tmp/ (xfs /dev/sda3): request=2 time=9.73 ms
+                8 KiB >>> /tmp/ (xfs /dev/sda3): request=3 time=2.00 ms
+                8 KiB <<< /tmp/ (xfs /dev/sda3): request=4 time=1.02 ms
+                8 KiB >>> /tmp/ (xfs /dev/sda3): request=5 time=1.95 ms
+
+Working with the fsync commit rate
+
+                $ phoronix-test-suite benchmark fs-mark FS-Mark 3.3:
+                pts/fs-mark-1.0.1
+                Disk Test Configuration
+                1: 1000 Files, 1MB Size
+                2: 1000 Files, 1MB Size, No Sync/FSync
+                3: 5000 Files, 1MB Size, 4 Threads
+                4: 4000 Files, 32 Sub Dirs, 1MB Size
+                5: Test All Options
+                Test:
+
+                ./fs_mark -help
+                Usage: fs_mark
+                -S Sync Method ( 0:No Sync,
+                1:fsyncBeforeClose,
+                2:sync/1_fsync,
+                3:PostReverseFsync,
+                4:syncPostReverseFsync,
+                5:PostFsync,
+                6:syncPostFsync)
+
+                ./fs_mark -w 8096 -S 1 -s 102400 -d /tmp/ -L 3 -n 500
+                # ./fs_mark -w 8096 -S 1 -s 102400 -d /tmp/ -L 3 -n 500
+                # Version 3.3, 1 thread(s) starting at Fri Dec 30 04:26:28 2016
+                # Sync method: INBAND FSYNC: fsync() per file in write loop.
+                # Directories: no subdirectories used
+                # File names: 40 bytes long, (16 initial bytes of time stamp with 24
+                random bytes at end of name)
+                # Files info: size 102400 bytes, written with an IO size of 8096
+                bytes per write
+                # App overhead is time in microseconds spent in the test not doing
+                file writing related system calls.
+                FSUse% Count Size Files/sec App Overhead
+                39 500 102400 156.4 17903
+                39 1000 102400 78.9 22906
+                39 1500 102400 116.2 24269
+
+Checking IOPS
+
+                $ ./fio --ioengine=libaio --direct=1 --name=test_seq_mix_rw --
+                filename=test_seq --bs=8k --iodepth=32 --size=1G --readwrite=rw --
+                rwmixread=50
+                test_seq_mix_rw: (g=0): rw=rw, bs=8K-8K/8K-8K/8K-8K, ioengine=libaio,
+                iodepth=32
+                ...
+                ...
+                test_seq_mix_rw: (groupid=0, jobs=1): err= 0: pid=43596: Fri Dec 30
+                23:31:11 2016
+                read : io=525088KB, bw=1948.1KB/s, iops=243 , runt=269430msec
+                ...
+                bw (KB/s) : min= 15, max= 6183, per=100.00%, avg=2002.59,
+                Database Benchmarking
+                [ 14 ]
+                stdev=1253.68
+                write: io=523488KB, bw=1942.1KB/s, iops=242 , runt=269430msec
+                ...
+                bw (KB/s) : min= 192, max= 5888, per=100.00%, avg=2001.74,
+                stdev=1246.19
+                ...
+                Run status group 0 (all jobs):
+                READ: io=525088KB, aggrb=1948KB/s, minb=1948KB/s, maxb=1948KB/s,
+                mint=269430msec, maxt=269430msec
+                WRITE: io=523488KB, aggrb=1942KB/s, minb=1942KB/s, maxb=1942KB/s,
+                mint=269430msec, maxt=269430msec
+                Disk stats (read/write):
+                sda: ios=65608/65423, merge=0/5, ticks=869519/853644,
+                in_queue=1723445, util=99.85%
+
+                $ ./fio --ioengine=libaio --direct=1 --name=test_rand_mix_rw --
+                filename=test_rand --bs=8k --iodepth=32 --size=1G --readwrite=randrw --
+                rwmixread=50
+                test_rand_mix_rw: (g=0): rw=randrw, bs=8K-8K/8K-8K/8K-8K,
+                ioengine=libaio, iodepth=32
+                ...
+                ...
+                test_rand_mix_rw: (groupid=0, jobs=1): err= 0: pid=43893: Fri Dec 30
+                23:49:19 2016
+                read : io=525088KB, bw=1018.9KB/s, iops=127 , runt=515375msec
+                ...
+                bw (KB/s) : min= 8, max= 6720, per=100.00%, avg=1124.47,
+                stdev=964.38
+                write: io=523488KB, bw=1015.8KB/s, iops=126 , runt=515375msec
+                ...
+                bw (KB/s) : min= 8, max= 6904, per=100.00%, avg=1125.46,
+                stdev=975.04
+                ...
+                Run status group 0 (all jobs):
+                READ: io=525088KB, aggrb=1018KB/s, minb=1018KB/s, maxb=1018KB/s,
+                mint=515375msec, maxt=515375msec
+                WRITE: io=523488KB, aggrb=1015KB/s, minb=1015KB/s, maxb=1015KB/s,
+                mint=515375msec, maxt=515375msec
+                Disk stats (read/write):
+                sda: ios=65609/65456, merge=0/4, ticks=7382037/5520238,
+                in_queue=12902772, util=100.00%
+
+Storage sizing
+
+                SELECT pg_sleep(0.01);
+                SELECT pg_sleep(0.1);
+                SELECT pg_sleep(0.01);
+                $ pgbench -T 86400 -f <script location> -c <number of concurrent
+                connections>
+
+Running read/write pgbench test cases
+
+                postgres=# SELECT TRUNC(((blks_hit)/(blks_read+blks_hit)::numeric)*100, 2)
+                hit_ratio FROM pg_stat_database WHERE datname = 'postgres';
+                hit_ratio
+                -----------
+                99.69
+                (1 row)

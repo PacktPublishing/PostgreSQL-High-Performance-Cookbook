@@ -1,0 +1,115 @@
+CHAPTER 4
+
+Monitoring CPU usage
+
+            bash-3.2$ sar -u 10 8
+            SunOS usstlz-pinfsi09 5.10 Generic_150400-04 sun4u 08/06/2014
+            23:32:17 %usr %sys %wio %idle
+            23:32:27 80 14 3 3
+            23:32:37 70 14 12 4
+
+Monitoring paging and swapping
+
+            bash$ vmstat -S
+            kthr memory page disk
+            faults cpu
+            r b w swap free si so pi po fr de sr s0 s2 s3 s4
+            in sy cs us sy id
+            6 14 0 453537392 170151696 0 0 2444 186 183 0 0 1 1 1 1
+            77696 687853 72596 13 4 83
+
+            bash-3.2$ sar -p 5 4
+            SunOS usmtnz-sinfsi17 5.10 Generic_150400-04 sun4u 08/08/2014
+            05:45:18 atch/s pgin/s ppgin/s pflt/s vflt/s slock/s
+            05:45:23 4391.18 0.80 2.20 12019.44 30956.92 0.60
+            05:45:28 2172.26 1.80 2.40 5417.76 15499.80 0.20
+
+            bash-3.2$ sar -w 5 4
+            SunOS usmtnz-sinfsi17 5.10 Generic_150400-04 sun4u 08/08/2014
+            06:20:55 swpin/s bswin/s swpot/s bswot/s pswch/s
+            06:21:00 0.00 0.0 0.00 0.0 53143
+            06:21:05 0.00 0.0 0.00 0.0 60949
+            06:21:10 0.00 0.0 0.00 0.0 55149
+            06:21:15 0.00 0.0 0.00 0.0 64075
+            Average 0.00 0.0 0.00 0.0 58349
+
+Tracking CPU consuming processes
+
+            bash-3.2$top
+            Cpu states: 0.0% idle, 82.0% user, 18.7% kernel, 0.8% wait, 0.5% swap
+            Memory: 795M real, 12M free, 318M swap, 1586M free swap
+            PID USERNAME PRI NICE SIZE RES STATE TIME WCPU CPU COMMAND
+            Monitoring Server Performance
+            [ 7 ]
+            23624 postgres -25 2 208M 4980K cpu 1:20 22.47% 94.43% postgres
+
+Monitoring CPU load
+
+            bash-3.2$ uptime
+            11:44pm up 20 day(s), 20 hr(s), 10 users, load average: 27.80, 30.46,
+            33.77
+
+Identifying CPU bottlenecks
+
+            bash-3.2$ mpstat 1 1
+            CPU minf mjf xcal intr ithr csw icsw migr smtx srw syscl usr sys wt
+            idl
+            0 672 0 2457 681 12 539 17 57 119 0 4303 18 10 0
+            73
+
+Identifying disk I/O bottlenecks
+
+        bash-3.2$iostat -d 5 5
+        sd0 sd2 sd3 sd4
+        Kps tps serv Kps tps serv Kps tps serv Kps tps serv
+        1 0 53 57 5 145 19 1 89 0 0 14
+
+        bash-3.2$ iostat -D 5 5
+        sd0 sd2 sd3 sd4
+        rps wps util rps wps util rps wps util rps wps util
+        0 0 0.3 4 0 6.2 1 1 1.8 0 0 0.0
+
+        bash-3.2$ iostat -x
+        extended device statistics
+        device r/s w/s kr/s kw/s wait actv svc_t %w %b
+        fd0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0 0
+
+Monitoring system load
+
+        $ vmstat
+        procs -----------memory---------- ---swap-- -----io---- --system-- ----cpu-
+        ---
+        r b swpd free buff cache si so bi bo in cs us sy id wa
+        14 0 52340 25272 3068 1662704 0 0 63 76 9 31 15 1 84 0
+
+Tracking historical CPU usage
+
+        $ sar -u -f /var/log/sa/sa08
+        03:50:10 PM CPU %user %nice %system %iowait %idle
+        04:00:10 PM all 0.42 0.00 0.24 0.00 96.41
+
+Tracking historical memory usage
+
+        $ sar -B -f /var/log/sa/sa05
+        06:10:05 AM pgpgin/s pgpgout/s fault/s majflt/s
+        06:20:05 AM 0.02 18.17 19.37 0.00
+
+        $ sar -W -f /var/log/sa/sa05
+        06:10:05 AM pswpin/s pswpout/s
+        06:20:05 AM 0.00 0.00
+        06:30:05 AM 0.02 0.00
+
+Monitoring disk space
+
+        bash-3.2$ df -h
+        Filesystem size used avail
+        capacity Mounted on
+        132G 80G 50G
+        62% /
+        Monitoring Server Performance
+        [ 17 ]
+        /devices 0K 0K 0K
+
+Monitoring network status
+
+        bash-3.2$ netstat -i
