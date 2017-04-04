@@ -1,0 +1,250 @@
+CHAPTER 9
+
+Dealing with bloating tables and indexes
+
+            postgres=# CREATE EXTENSION pgstattuple;
+            CREATE EXTENSION
+            postgres=# CREATE TABLE test(t INT);
+            CREATE TABLE
+            postgres=# INSERT INTO test VALUES(generate_series(1, 100000));
+            INSERT 0 100000
+            postgres=# SELECT * FROM pgstattuple('test');
+            -[ RECORD 1 ]------+--------
+            table_len | 3629056
+            tuple_count | 100000
+            tuple_len | 2800000
+            tuple_percent | 77.16
+            dead_tuple_count | 0
+            dead_tuple_len | 0
+            dead_tuple_percent | 0
+            free_space | 16652
+            free_percent | 0.46
+            postgres=# DELETE FROM test WHERE t%7=0;
+            DELETE 14285
+            postgres=# SELECT * FROM pgstattuple('test');
+            -[ RECORD 1 ]------+--------
+            table_len | 3629056
+            tuple_count | 85715
+            tuple_len | 2400020
+            tuple_percent | 66.13
+            dead_tuple_count | 14285
+            dead_tuple_len | 399980
+            dead_tuple_percent | 11.02
+            free_space | 16652
+            free_percent | 0.46
+
+            postgres=# SELECT * FROM pgstatindex('test_idx');
+            -[ RECORD 1 ]------+----------
+            version | 2
+            tree_level | 2
+            index_size | 105332736
+            root_block_no | 412
+            internal_pages | 40
+            leaf_pages | 12804
+            empty_pages | 0
+            deleted_pages | 13
+            avg_leaf_density | 9.84
+            leaf_fragmentation | 21.42
+
+Vacuum and autovacuum
+
+            $ psql -h localhost -U postgres
+            postgres=# CREATE EXTENTION pg_freespacemap;
+            CREATE
+            postgres=# CREATE TABLE test(t INT);
+            CREATE
+            postgres=# ALTER TABLE test SET(autovacuum_enabled=off);
+            ALTER TABLE
+            postgres=# INSERT INTO test VALUES(generate_series(1, 1000));
+            INSERT 0 1000
+            postgres=# ANALYZE test;
+            ANALYZE
+            postgres=# SELECT relpages FROM pg_class WHERE relname='test';
+            relpages
+            ----------
+            5
+            (1 row)
+            postgres=# SELECT sum(avail) freespace FROM pg_freespace('test');
+            freespace
+            -----------
+            0
+            (1 row)
+            postgres=# UPDATE test SET t=1000;
+            UPDATE 1000
+            postgres=# ANALYZE test;
+            ANALYZE
+            postgres=# SELECT relpages FROM pg_class WHERE relname='test';
+            relpages
+            ----------
+            9
+            (1 row)
+            postgres=# SELECT sum(avail) freespace FROM pg_freespace('test');
+            freespace
+            -----------
+            0
+            (1 row)
+            postgres=# SELECT n_dead_tup FROM pg_stat_user_tables WHERE relname='test';
+            n_dead_tup
+            ------------
+            1000
+            (1 row)
+            postgres=# VACUUM test;
+            VACUUM
+            postgres=# SELECT sum(avail) freespace FROM pg_freespace('test');
+            freespace
+            -----------
+            33248
+            (1 row)
+            postgres=# INSERT INTO test VALUES(generate_series(1, 1000));
+            INSERT 0 1000
+            postgres=# ANALYZE test;
+            ANALYZE
+            postgres=# SELECT relpages FROM pg_class WHERE relname='test';
+            relpages
+            ----------
+            9
+            (1 row)
+            postgres=# SELECT sum(avail) freespace FROM pg_freespace('test');
+            freespace
+            -----------
+            4320
+            (1 row)
+            postgres=# TRUNCATE test;
+            TRUNCATE TABLE
+            postgres=# ANALYZE test;
+            ANALYZE
+            postgres=# INSERT INTO test VALUES(generate_series(1, 1000));
+            INSERT 0 1000
+            postgres=# UPDATE test SET t=100;
+            UPDATE 1000
+            postgres=# INSERT INTO test VALUES(generate_series(1, 1000));
+            INSERT 0 1000
+            postgres=# ANALYZE test;
+            ANALYZE
+            postgres=# SELECT relpages FROM pg_class WHERE relname='test';
+            relpages
+            ----------
+            14
+            (1 row)
+            postgres=# SELECT sum(avail) freespace FROM pg_freespace('test');
+            freespace
+            -----------
+            0
+            (1 row)
+
+            $ vacuumdb -j 4
+            vacuumdb: vacuuming database "postgres"
+
+Freezing and transaction ID wraparound
+
+            Session 1
+                        postgres=# BEGIN;
+                        BEGIN
+                        postgres=# SELECT txid_current();
+                        txid_current
+                        --------------
+                        452516
+                        (1 row)
+                        postgres=# INSERT INTO test
+                        VALUES(1);
+                        INSERT 0 1
+                        postgres=# END;
+                        COMMIT
+
+
+            Session 2
+
+                        postgres=# BEGIN;
+                        BEGIN
+                        postgres=# SELECT txid_current();
+                        txid_current
+                        --------------
+                        452517
+                        (1 row)
+                        postgres=# SELECT xmin, xmax, t FROM
+                        test;
+                        xmin | xmax | t
+                        --------+------+---
+                        452516 | 0 | 1
+                        (1 row)
+                        postgres=# END;
+                        COMMIT
+
+            Session 1
+                        postgres=# BEGIN;
+                        BEGIN
+                        postgres=# SELECT txid_current();
+                        txid_current
+                        --------------
+                        452519
+                        (1 row)
+                        postgres=# SELECT xmin, xmax, t FROM
+                        test;
+                        xmin | xmax | t
+                        --------+------+---
+                        452520 | 0 | 1
+                        (1 row)
+                        postgres=# END;
+                        COMMIT
+
+            Session 2
+                        postgres=# BEGIN;
+                        BEGIN
+                        postgres=# SELECT txid_current();
+                        txid_current
+                        --------------
+                        452520
+                        (1 row)
+                        postgres=# INSERT INTO test
+                        VALUES(1);
+                        INSERT 0 1
+                        postgres=# END;
+                        COMMIT
+
+            $ bin/postgres --single -D <Data Directory Location> <database name>
+            PostgreSQL stand-alone backend 9.5.4
+            backend> VACUUM;
+
+Monitoring vacuum progress
+
+            benchmarksql=# VACUUM bigtable;
+            benchmarksql=# SELECT * FROM pg_stat_progress_vacuum;
+            (0 rows)
+            benchmarksql=# \watch 1 
+            -[ RECORD 1 ]------+------------------ pid
+            | 4785
+            datid | 16405
+            datname | benchmarksql
+            relid | 16762
+            phase | scanning heap
+            heap_blks_total | 412830
+            heap_blks_scanned | 393532
+            heap_blks_vacuumed | 0
+            index_vacuum_count | 0
+            max_dead_tuples | 11184810
+            num_dead_tuples | 1264
+
+Control bloat using transaction age
+            postgres=# ALTER SYSTEM SET old_snapshot_threshold TO '1min';
+            ALTER SYSTEM
+
+            Session 1
+                    postgres=# UPDATE test SET t=10;
+                    UPDATE 1
+                    postgres=# SELECT pg_sleep(100);
+                    pg_sleep
+                    ----------
+                    (1 row)
+            Session 2
+                    postgres=# BEGIN WORK;
+                    BEGIN
+                    postgres=# SET TRANSACTION ISOLATION LEVEL
+                    SERIALIZABLE;
+                    SET
+                    postgres=# SELECT * FROM test;
+                    t
+                    ----
+                    10
+                    (1 row)
+                    postgres=# UPDATE test SET t=10;
+                    ERROR: snapshot too old

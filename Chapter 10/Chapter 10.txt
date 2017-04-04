@@ -1,0 +1,249 @@
+CHAPTER 10
+
+Using pg_dump to upgrade data
+
+            pg_dumpall > db.backup
+            pg_ctl -D /var/lib/pgsql/9.5/data stop
+            mv /var/lib/pgsql /var/lib/pgsql.old
+            /usr/pgsql-9.6/bin/initdb -D /var/lib/pgsql/9.6/data
+            pg_ctl -D /var/lib/pgsql/9.6/data start
+            /usr/pgsql-9.6/bin/psql -d postgres -f db.backup
+
+Using the pg_upgrade utility for version upgrade
+
+            cd /opt/pgsql/9.5/
+            tar -cvf data.tar data
+            View /etc/init.d/postgresql-9.6
+            PGDATA=/opt/pgsql/9.6/data
+            PGLOG=/opt/pgsql/9.6/pgstartup.log
+            PGPORT= 5433
+            /etc/init.d/postgresql-9.6 initdb
+            Service postgresql-9.5 stop
+            cd /usr/pgsql-9.6/bin
+            ./pg_upgrade -v -b /usr/pgsql-9.5/bin/ -B /usr/pgsql-9.6/bin/ -d /opt/pgsql/9.5/data/ -D /opt/pgsql/9.6/data/ --check
+            service postgresql-9.6 start
+            ./opt/pgsql/analyze_new_cluster.sh
+            ./delete_old_cluster.sh
+
+Replicating data from other databases to PostgreSQL using Goldengate
+
+            sqlplus / as sysdba
+            SQL> alter system set
+            log_archive_dest_1='LOCATION=/home/abcd/oracle/oradat/arch';
+            SQL> shutdown immediate
+            SQL> startup mount
+            SQL> alter database archivelog;
+            SQL> alter database open;
+            SQL> alter database add supplemental log data;
+            SQL> alter database force logging;
+
+            SQL> SELECT force_logging, supplemental_log_data_min FROM
+            v$database;
+            FOR SUPPLEME
+            --- --------
+            YES YES
+
+            export PATH=$ORACLE_HOME/bin:$ORACLE_HOME/OPatch:$HOME/ggs:$PATH
+            export LD_LIBRARY_PATH=$ORACLE_HOME/lib:$HOME/ggs/lib
+
+            ./ggsci
+
+            GGSCI> create subdirs
+            /home/abcd/oracle/ggs
+            Parameter files /home/abcd/oracle/ggs/dirprm:
+            Report files /home/abcd/oracle/ggs/dirrpt:
+            created
+            Checkpoint files /home/abcd/oracle/ggs/dirchk:
+            created
+            Process status files /home/abcd/oracle/ggs/dirpcs:
+            created
+            SQL script files /home/abcd/oracle/ggs/dirsql:
+            created
+            Database definitions files /home/abcd/oracle/ggs/dirdef:
+            created
+            Extract data files /home/abcd/oracle/ggs/dirdat:
+            created
+            Temporary files /home/abcd/oracle/ggs/dirtmp:
+            created
+            Stdout files /home/abcd/oracle/ggs/dirout:
+            created
+
+            GGSCI > edit param mgr
+            GGSCI > view param mgr
+            PORT 7809
+
+            GGSCI > start mgr
+            GGSCI > info all
+            Program Status Group Lag at Chkpt Time Since
+            Chkpt
+            MANAGER RUNNING
+            GGSCI > info mgr
+            Manager is running (IP port 7809).
+
+            export LD_LIBRARY_PATH=/usr/pgsql/lib:/usr/pgsql/ggs/lib
+            export PATH=/usr/pgsql/bin:/usr/pgsql/ggs:$PATH
+            view odbc.ini
+            [ODBC Data Sources]
+            GG_Postgres=DataDirect 6.1 PostgreSQL Wire Protocol
+            [ODBC]
+            IANAAppCodePage=106
+            InstallDir=/usr/pgsql/ggs
+            [GG_Postgres]
+            Driver=/usr/pgsql/ggs/lib/GGpsql25.so
+            Description=DataDirect 6.1 PostgreSQL Wire Protocol
+            Database=test
+            HostName=dbtest
+            PortNumber=5432
+            LogonID=nkumar
+            Password=nkumar
+            export ODBCINI=/usr/pgsql/ggs/odbc.ini
+            ./ggsci
+
+            GGSCI > create subdirs
+            /usr/pgsql/ggs
+            Parameter files /usr/pgsql/ggs/dirprm: already
+            exists
+            Report files /usr/pgsql/ggs/dirrpt: created
+            Checkpoint files /usr/pgsql/ggs/dirchk: created
+            Process status files /usr/pgsql/ggs/dirpcs: created
+            SQL script files /usr/pgsql/ggs/dirsql: created
+            Database definitions files /usr/pgsql/ggs/dirdef: created
+            Extract data files /usr/pgsql/ggs/dirdat: created
+            Temporary files /usr/pgsql/ggs/dirtmp: created
+            Stdout files /usr/pgsql/ggs/dirout: created
+
+            GGSCI > edit param mgr
+            GGSCI > view param mgr
+            PORT 7809
+
+            GGSCI > start mgr
+            Manager started.
+            GGSCI > info all
+            Program Status Group Lag at Chkpt Time Since
+            Chkpt
+            MANAGER RUNNING
+            GGSCI > info mgr
+            Manager is running (IP port 7809).
+
+            sqlplus nkumar
+            SQL> create table abcd(col1 number,col2 varchar2(50));
+            Table created.
+            SQL> alter table abcd add primary key(col1);
+            Table altered.
+
+            psql -U nkumar -d test -h dbtest
+            test=> create table "public"."abcd" ( "col1" integer NOT NULL,
+            "col2" varchar(20),CONSTRAINT "PK_Col111" PRIMARY KEY
+            ("col1"));
+
+            GGSCI > dblogin userid nkumar, password nkumar
+            Successfully logged into database.
+            GGSCI > list tables *
+            NKUMAR.ABCD
+
+            GGSCI > capture tabledef nkumar.abcd
+            Table definitions for NKUMAR.ABCD:
+            COL1 NUMBER NOT NULL PK
+            COL2 VARCHAR (50)
+            GGSCI > dblogin sourcedb gg_postgres userid nkumar
+            Password:
+            2014-11-04 17:56:35 INFO OGG-03036 Database character set
+            identified as UTF-8. Locale: en_US.
+            2014-11-04 17:56:35 INFO OGG-03037 Session character set
+            identified as UTF-8.
+            Successfully logged into database.
+            GGSCI > list tables *
+            public.abcd
+            Found 1 table matching list criteria
+            GGSCI > capture tabledef "public"."abcd"
+            Table definitions for public.abcd:
+            col1 NUMBER (10) NOT NULL PK
+            col2 VARCHAR (20)
+
+            GGSCI > edit param epos
+
+            GGSCI > view param epos
+            EXTRACT epos
+            SETENV (NLS_LANG="AMERICAN_AMERICA.ZHS16GBK")
+            SETENV
+            (ORACLE_HOME="/home/abcd/oracle/product/11.2.0/dbhome_1")
+
+            SETENV (ORACLE_SID="orapd")
+            USERID nkumar, PASSWORD nkumar
+            RMTHOST dbtest, MGRPORT 7809
+            RMTTRAIL /usr/pgsql/ggs/dirdat/ep
+            TABLE nkumar.abcd;
+
+            GGSCI > add extract epos, tranlog, begin now
+            EXTRACT added.
+            GGSCI > add exttrail /usr/pgsql/ggs/dirdat/ep, extract epos,
+            megabytes 5
+            EXTTRAIL added.
+            GGSCI > start epos
+            Sending START request to MANAGER ...
+            EXTRACT EPOS starting
+            GGSCI > info all
+            Program Status Group Lag at Chkpt Time Since
+            Chkpt
+            MANAGER RUNNING
+            EXTRACT RUNNING EPOS 00:00:00 00:00:00
+            GGSCI > info extract epos
+
+            GGSCI > view param defgen
+            DEFSFILE /home/abcd/oracle/ggs/dirdef/ABCD.def
+            USERID nkumar, password nkumar
+            TABLE NKUMAR.ABCD;
+
+            ./defgen paramfile ./dirprm/defgen.prm
+            Definitions generated for 1 table in
+            /home/abcd/oracle/ggs/dirdef/ABCD.def
+
+            scp dirdef/ABCD.def postgres@dbtest:/usr/pgsql/ggs/dirdef
+
+            GGSCI > edit param rpos
+            GGSCI > view param rpos
+            REPLICAT rpos
+            SOURCEDEFS /usr/pgsql/ggs/dirdef/ABCD.def
+            SETENV ( PGCLIENTENCODING = "UTF8" )
+            SETENV (ODBCINI="/usr/pgsql/ggs/odbc.ini" )
+            SETENV (NLS_LANG="AMERICAN_AMERICA.AL32UTF8")
+            TARGETDB GG_Postgres, USERID nkumar, PASSWORD nkumar
+            DISCARDFILE /usr/pgsql/ggs/dirrpt/diskg.dsc, purge
+            MAP NKUMAR.ABCD, TARGET public.abcd, COLMAP
+            (COL1=col1,COL2=col2);
+
+            GGSCI > add replicat rpos, NODBCHECKPOINT, exttrail
+            /usr/pgsql/ggs/dirdat/ep
+            REPLICAT added.
+            GGSCI > start rpos
+            Sending START request to MANAGER ...
+            REPLICAT RPOS starting
+
+            GGSCI > info all
+            Program Status Group Lag at Chkpt Time Since
+            Chkpt
+            MANAGER RUNNING
+            REPLICAT RUNNING RPOS 00:00:00 00:00:00
+            GGSCI > info all
+            Program Status Group Lag at Chkpt Time Since
+            Chkpt
+            MANAGER RUNNING
+            REPLICAT RUNNING RPOS 00:00:00 00:00:02
+            GGSCI > view report rpos
+
+            sqlplus nkumar
+            SQL> insert into abcd values(101,'Neeraj Kumar');
+            1 row created.
+            SQL> commit;
+            Commit complete.
+            SQL> select * from abcd;
+            COL1 COL2
+            ---------- -----------------------------------
+            101 Neeraj Kumar
+
+            psql -U nkumar -d test
+            test=> select * from abcd;
+            col1 | col2
+            ------+-------------------
+            101 | Neeraj Kumar
+            (1 row)

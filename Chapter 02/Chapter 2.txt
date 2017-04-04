@@ -1,0 +1,27 @@
+CHAPTER 2
+
+Starting the server manually
+
+            pg_ctl -D <location of data directory> start
+            pg_ctl -D /var/lib/pgsql/9.6/data start
+            service <postgresql-version> start
+            service postgresql-9.6 start
+
+            ps aux | grep "postgres" | grep -v "grep"
+            postgres 1289 0.0 0.3 51676 7900 ? S 11:31 0:01
+            /usr/lib/postgresql/9.6/bin/postgres -D /var/lib/postgresql/9.6/main -c
+            config_file=/etc/postgresql/9.6/main/postgresql.conf
+
+Stopping the server quickly
+
+        pg_ctl -D /var/lib/pgsql/9.6/data -m fast stop
+        pg_ctl -D /var/lib/pgsql/9.6/data stop -m immediate
+
+Reloading server configuration
+
+        pg_ctl -D /var/lib/pgsql/9.6/data reload
+        postgres=# select pg_reload_conf();
+        pg_ctl -D /var/lib/pgsql/9.6/data restart
+
+Tuning logging-related parameters
+        log_line_prefix='%t:%r:%u@%d:[%p]: '

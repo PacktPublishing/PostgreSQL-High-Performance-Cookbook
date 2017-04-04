@@ -1,0 +1,841 @@
+CHAPTER 6
+
+Setting up hot streaming replication
+
+            psql -c "CREATE USER repuser REPLICATION LOGIN ENCRYPTED
+            PASSWORD 'charlie';"
+            Vi pg_hba.conf
+            host replication repuser 192.168.0.5/32 md5
+
+            Vi /var/lib/pgsql/9.6/data/postgresql.conf
+            listen_addresses = '*'
+            wal_level =hot_standby
+            max_wal_senders = 3
+            wal_keep_segments = 8
+            archive_mode = on
+            archive_command = 'cp %p /var/lib/pgsql/archive/%f && scp %p
+            postgres@192.168.0.5:/var/lib/pgsql/archive/%f'
+
+            pg_ctl -D /var/lib/pgsql/9.6/data restart
+
+            psql -U postgres -h 192.168.0.4 -c "SELECT pg_start_backup('label',
+            true)"
+            rsync -a /var/lib/pgsql/9.6/data/
+            192.168.0.5:/var/lib/pgsql/9.6/data/
+            --exclude postmaster.pid
+            psql -U postgres -h 192.168.0.4 -c "SELECT pg_stop_backup()"
+
+            hot_standby = on
+
+            cp /usr/pgsql-9.6/share/recovery.conf.sample
+            /var/lib/pgsql/9.6/data/recovery.conf
+            standby_mode = on
+            primary_conninfo = 'host=192.168.0.4 port=5432 user=repuser
+            password=charlie'
+            trigger_file = '/tmp/trigger.replication′
+            restore_command = 'cp /var/lib/pgsql/archive/%f "%p"'
+
+            service postgresql-9.6 start
+
+            psql -h 192.168.0.4 -d postgres -U postgres -W
+            postgres=# create database test;
+            postgres=# \c test;
+            test=# create table testtable ( testint int, testchar varchar(40)
+            );
+            CREATE TABLE
+            test=# insert into testtable values ( 1, 'What A Sight.' );
+            INSERT 0 1
+
+            psql -h 192.168.0.5 -d test -U postgres -W
+            test=# select * from testtable;
+            testint | testchar
+            ---------+---------------------------
+            1 | What A Sight.
+            (1 row)
+
+Replication using Slony
+
+            tar xvfj slony1-2.2.3.tar.bz2
+            cd slony1-2.2.3
+            ./configure --with-pgconfigdir=/usr/pgsql-9.6/bin/
+            make
+            make install
+
+            pg_ctl -D $PGDATA start
+            createdb test1
+            createdb test2
+            psql -d test1
+            test1=# create table t_test (id numeric primary key, name
+            varchar);
+            test1=# insert into t_test values(1,'A'),(2,'B'), (3,'C');
+            pg_dump -s -p 5432 -h localhost test1 | psql -h localhost -p 5432
+            test2
+
+            psql -d test2
+            test2=# select * from t_test;
+            vi init_master.slonik
+            #! /bin/slonik
+            cluster name = mycluster;
+            node 1 admin conninfo = 'dbname=test1 host=localhost
+            port=5432 user=postgres password=postgres';
+            node 2 admin conninfo = 'dbname=test2 host=localhost
+            port=5432 user=postgres password=postgres';
+            init cluster ( id=1);
+            create set (id=1, origin=1);
+            set add table(set id=1, origin=1, id=1, fully qualified
+            name = 'public.t_test');
+            store node (id=2, event node = 1);
+            store path (server=1, client=2, conninfo='dbname=test1
+            host=localhost port=5432 user=postgres password=postgres');
+            store path (server=2, client=1, conninfo='dbname=test2
+            host=localhost port=5432 user=postgres password=postgres');
+            store listen (origin=1, provider = 1, receiver = 2);
+            store listen (origin=2, provider = 2, receiver = 1);
+
+            vi init_slave.slonik
+            #! /bin/slonik
+            cluster name = mycluster;
+            node 1 admin conninfo = 'dbname=test1 host=localhost
+            port=5432 user=postgres password=postgres';
+            node 2 admin conninfo = 'dbname=test2 host=localhost
+            port=5432 user=postgres password=postgres';
+            subscribe set ( id = 1, provider = 1, receiver = 2, forward
+            = no);
+
+            cd /usr/pgsql-9.6/bin
+            slonik init_master.slonik
+
+            nohup slon mycluster "dbname=test1 host=localhost port=5432
+            user=postgres password=postgres" &
+
+            nohup slon mycluster "dbname=test2 host=localhost port=5432
+            user=postgres password=postgres" &
+
+            psql -d test1
+            test1=# insert into t_test values (5,'E');
+
+            psql -d test2
+            test2=# select * from t_test;
+            id | name
+            ----+------
+            1 | A
+            2 | B
+            3 | C
+            5 | E
+            (4 rows)
+
+Replication using Londiste
+
+            tar -xvf skytools-3.2.tar.gz
+            cd skytools-3.2
+            ./configure --prefix=/var/lib/pgsql/9.6/Sky -withpgconfig=/
+            usr/pgsql-9.6/bin/pg_config
+            make
+            make install
+            export PYTHONPATH=/opt/PostgreSQL/9.6/Sky/lib64/python2.6/sitepackages/
+
+            createdb node1
+            createdb node2
+            pgbench -i -s 2 -F 80 node1
+            Vi /tmp/prepare_pgbenchdb_for_londiste.sql
+            - add primary key to history table
+            ALTER TABLE pgbench_history ADD COLUMN hid SERIAL PRIMARY KEY;
+            -- add foreign keys
+            ALTER TABLE pgbench_tellers ADD CONSTRAINT
+            pgbench_tellers_branches_fk FOREIGN KEY(bid) REFERENCES
+            pgbench_branches;
+            ALTER TABLE pgbench_accounts ADD CONSTRAINT
+            pgbench_accounts_branches_fk
+            FOREIGN KEY(bid) REFERENCES pgbench_branches;
+            ALTER TABLE pgbench_history ADD CONSTRAINT
+            pgbench_history_branches_fk
+            FOREIGN KEY(bid) REFERENCES pgbench_branches;
+            ALTER TABLE pgbench_history ADD CONSTRAINT
+            pgbench_history_tellers_fk
+            FOREIGN KEY(tid) REFERENCES pgbench_tellers;
+            ALTER TABLE pgbench_history ADD CONSTRAINT
+            pgbench_history_accounts_fk
+            FOREIGN KEY(aid) REFERENCES pgbench_accounts;
+
+            psql node1 -f /tmp/prepare_pgbenchdb_for_londiste.sql
+
+            pg_dump -s -t 'pgbench*' node1 > /tmp/tables.sql
+            psql -f /tmp/tables.sql node2
+
+            Vi londiste.ini
+            [londiste3]
+            job_name = first_table
+            db = dbname=node1
+            queue_name = replication_queue
+            logfile = /home/postgres/log/londiste.log
+            pidfile = /home/postgres/pid/londiste.pid
+
+            [postgres@localhost bin]$ ./londiste3 londiste3.ini create-root
+            node1
+            dbname=node1
+            2016-12-09 18:54:34,723 2335 WARNING No host= in public connect
+            string,
+            bad idea
+            2016-12-09 18:54:35,210 2335 INFO plpgsql is installed
+            2016-12-09 18:54:35,217 2335 INFO pgq is installed
+            2016-12-09 18:54:35,225 2335 INFO pgq.get_batch_cursor is installed
+            2016-12-09 18:54:35,227 2335 INFO pgq_ext is installed
+            2016-12-09 18:54:35,228 2335 INFO pgq_node is installed
+            2016-12-09 18:54:35,230 2335 INFO londiste is installed
+            2016-12-09 18:54:35,232 2335 INFO londiste.global_add_table is
+            installed
+            2016-12-09 18:54:35,281 2335 INFO Initializing node
+            2016-12-09 18:54:35,285 2335 INFO Location registered
+            2016-12-09 18:54:35,447 2335 INFO Node "node1" initialized for
+            queue
+            "replication_queue" with type "root"
+
+
+            vi slave.ini
+            [londiste3]
+            job_name = first_table_slave
+            db = dbname=node2
+            queue_name = replication_queue
+            logfile = /home/postgres/log/londiste_slave.log
+            pidfile = /home/postgres/pid/londiste_slave.pid
+
+            ./londiste3 slave.ini create-leaf node2 dbname=node2
+            -provider=dbname=node1
+            2016-12-09 18:57:22,769 2408 WARNING No host= in public connect
+            string, bad idea
+            2016-12-09 18:57:22,778 2408 INFO plpgsql is installed
+            2016-12-09 18:57:22,778 2408 INFO Installing pgq
+            2016-12-09 18:57:22,778 2408 INFO Reading from
+            /var/lib/pgsql/9.6/Sky/share/skytools3/pgq.sql
+            2016-12-09 18:57:23,211 2408 INFO pgq.get_batch_cursor is installed
+            2016-12-09 18:57:23,212 2408 INFO Installing pgq_ext
+            2016-12-09 18:57:23,213 2408 INFO Reading from
+            /var/lib/pgsql/9.3/Sky/share/skytools3/pgq_ext.sql
+            2016-12-09 18:57:23,454 2408 INFO Installing pgq_node
+            2016-12-09 18:57:23,455 2408 INFO Reading from
+            /var/lib/pgsql/9.3/Sky/share/skytools3/pgq_node.sql
+            2016-12-09 18:57:23,729 2408 INFO Installing londiste
+            2016-12-09 18:57:23,730 2408 INFO Reading from
+            /var/lib/pgsql/9.3/Sky/share/skytools3/londiste.sql
+            2016-12-09 18:57:24,391 2408 INFO londiste.global_add_table is
+            installed
+            2016-12-09 18:57:24,575 2408 INFO Initializing node
+            2016-12-09 18:57:24,705 2408 INFO Location registered
+            2016-12-09 18:57:24,715 2408 INFO Location registered
+            2016-12-09 18:57:24,744 2408 INFO Subscriber registered: node2
+            2016-12-09 18:57:24,748 2408 INFO Location registered
+            2016-12-09 18:57:24,750 2408 INFO Location registered
+            2016-12-09 18:57:24,757 2408 INFO Node "node2" initialized for
+            queue
+            "replication_queue" with type "leaf"
+            2016-12-09 18:57:24,761 2408 INFO Done
+
+            [postgres@localhost bin]$ ./londiste3 slave.ini worker
+            2016-12-09 18:58:53,411 2423 INFO Consumer uptodate = 1
+
+            vi pgqd.ini
+            [pgqd]
+            logfile = /home/postgres/log/pgqd.log
+            pidfile = /home/postgres/pid/pgqd.pid
+
+            [postgres@localhost bin]$ ./pgqd pgqd.ini
+            2016-12-09 19:05:56.843 2542 LOG Starting pgqd 3.2
+            2016-12-09 19:05:56.844 2542 LOG auto-detecting dbs ...
+            2016-12-09 19:05:57.257 2542 LOG node1: pgq version ok: 3.2
+            2016-12-09 19:05:58.130 2542 LOG node2: pgq version ok: 3.2
+
+            [postgres@localhost bin]$ ./londiste3 londiste3.ini add-table --all
+            2016-12-09 19:07:26,064 2614 INFO Table added:
+            public.pgbench_accounts
+            2016-12-09 19:07:26,161 2614 INFO Table added:
+            public.pgbench_branches
+            2016-12-09 19:07:26,238 2614 INFO Table added:
+            public.pgbench_history
+            2016-12-09 19:07:26,287 2614 INFO Table added:
+            public.pgbench_tellers
+
+            [postgres@localhost bin]$ ./londiste3 slave.ini add-table -all
+
+            pgbench -T 10 -c 5 node1
+
+            [postgres@localhost bin]$ ./londiste3 slave.ini compare
+            2016-12-09 19:26:16,421 2982 INFO Checking if node1 can be used for
+            copy
+            2016-12-09 19:26:16,424 2982 INFO Node node1 seems good source,
+            using it
+
+Replication using Bucardo
+
+            yum install perl-DBI perl-DBD-Pg perl-DBIx-Safe
+            yum install postgresql96-plperl
+            tar xvfz Bucardo-5.2.0.tar.gz
+            cd Bucardo-5.2.0
+            perl Makefile.PL
+            make
+            make install
+
+            [postgres@localhost ~]$ bucardo install --batch --quiet
+            Creating superuser 'bucardo'
+            [postgres@localhost ~]$ psql -qc 'create database gamma1'
+            psql -d test1 -qc 'create table t1 (id serial primary key, email
+            text)'
+            [postgres@localhost ~]$ psql -qc 'create database gamma2 template gamma1'
+
+            postgres@localhost ~]$ bucardo add db db1 dbname=gamma1
+            Added database "db1"
+            [postgres@localhost ~]$ bucardo add db db2 dbname=gamma2
+            Added database "db2"
+
+            [postgres@localhost ~]$ bucardo add herd myherd t1
+            Created relgroup "myherd"
+            Added the following tables or sequences:
+            public.t1 (DB: db1)
+            The following tables or sequences are now part of the relgroup
+            "myherd": public.t1
+
+            [postgres@localhost ~]$ bucardo add sync beta herd=myherd
+            dbs=db1:source
+            Added sync "beta"
+            Created a new dbgroup named "beta"
+
+            [postgres@localhost ~]$ bucardo add sync charlie herd=myherd
+            dbs=db1:source,db2:target
+            Added sync "charlie"
+            Created a new dbgroup named "charlie"
+
+            [postgres@localhost ~]$ bucardo start
+            Checking for existing processes
+            Removing file "pid/fullstopbucardo"
+            Starting Bucardo
+
+            psql -d gamma1
+            gamma1=# insert into t1 values (1,'wallsingh@gmail.com');
+            INSERT 0 1
+            gamma1=# insert into t1 values (2,'neha.verma@gmail.com');
+            INSERT 0 1
+
+            psql -d gamma2
+            gamma2=# select * from t1;
+            id | email
+            ----+----------------------
+            1 | wallsingh@gmail.com
+            2 | neha.verma@gmail.com
+            (2 rows)
+
+Replication using DRBD
+
+            vi /etc/selinux/config
+            SELINUX=disabled
+            vi /etc/sysconfig/network
+            For node 1:
+            NETWORKING=yes
+            NETWORKING_IPV6=no
+            HOSTNAME=node1.author.org
+            GATEWAY=10.0.0.2
+            NETWORKING=yes
+            NETWORKING_IPV6=no
+            HOSTNAME=node2.author.org
+            GATEWAY=10.0.0.2
+            vi /etc/sysconfig/network-scripts/ifcfg-eth0
+            DEVICE=eth0
+            BOOTPROTO=static
+            IPADDR=10.0.0.181
+            NETMASK=255.255.255.0
+            ONBOOT=yes
+            HWADDR=a2:4e:7f:64:61:24
+            vi /etc/sysconfig/network-scripts/ifcfg-eth1
+            DEVICE=eth1
+            BOOTPROTO=static
+            IPADDR=172.16.0.1
+            NETMASK=255.255.255.0
+            ONBOOT=yes
+            HWADDR=ee:df:ff:4a:5f:68
+
+            vi /etc/sysconfig/network-scripts/ifcfg-eth0
+            DEVICE=eth0
+            BOOTPROTO=static
+            IPADDR=10.0.0.182
+            NETMASK=255.255.255.0
+            ONBOOT=yes
+            HWADDR=22:42:b1:5a:42:6f
+
+            vi /etc/sysconfig/network-scripts/ifcfg-eth1
+            DEVICE=eth1
+            BOOTPROTO=static
+            IPADDR=172.16.0.2
+            NETMASK=255.255.255.0
+            ONBOOT=yes
+            HWADDR=6a:48:d2:70:26:5e
+
+            vi /etc/resolv.conf
+            search author.org
+            nameserver 10.0.0.2
+            vi /etc/hosts
+            127.0.0.1 localhost.localdomain localhost
+            10.0.0.181 node1.author.org node1
+            10.0.0.182 node2.author.org node2
+            10.0.0.180 dbip.author.org node2
+
+            root@node1 ~]# ping -c 2 node2
+            PING node2 (10.0.0.182) 56(84) bytes of data.
+            64 bytes from node2 (10.0.0.182): icmp_seq=1 ttl=64 time=0.089 ms
+            64 bytes from node2 (10.0.0.182): icmp_seq=2 ttl=64 time=0.082 ms
+            --- node2 ping statistics ---
+            2 packets transmitted, 2 received, 0% packet loss, time 999ms
+            rtt min/avg/max/mdev = 0.082/0.085/0.089/0.009 ms
+            [root@node1 ~]# ping -c 2 172.16.0.2
+            PING 172.16.0.2 (172.16.0.2) 56(84) bytes of data.
+            64 bytes from 172.16.0.2: icmp_seq=1 ttl=64 time=0.083 ms
+            64 bytes from 172.16.0.2: icmp_seq=2 ttl=64 time=0.083 ms
+            --- 172.16.0.2 ping statistics ---
+            2 packets transmitted, 2 received, 0% packet loss, time 999ms
+            rtt min/avg/max/mdev = 0.083/0.083/0.083/0.000 ms
+
+            [root@node2 ~]# ping -c 2 node1
+            PING node1 (10.0.0.181) 56(84) bytes of data.
+            64 bytes from node1 (10.0.0.181): icmp_seq=1 ttl=64 time=0.068 ms
+            64 bytes from node1 (10.0.0.181): icmp_seq=2 ttl=64 time=0.063 ms
+            --- node1 ping statistics ---
+            2 packets transmitted, 2 received, 0% packet loss, time 999ms
+            rtt min/avg/max/mdev = 0.063/0.065/0.068/0.008 ms
+
+            [root@node2 ~]# ping -c 2 172.16.0.1
+            PING 172.16.0.1 (172.16.0.1) 56(84) bytes of data.
+            64 bytes from 172.16.0.1: icmp_seq=1 ttl=64 time=1.36 ms
+            64 bytes from 172.16.0.1: icmp_seq=2 ttl=64 time=0.075 ms
+            --- 172.16.0.1 ping statistics ---
+            2 packets transmitted, 2 received, 0% packet loss, time 1001ms
+            rtt min/avg/max/mdev = 0.075/0.722/1.369/0.647 ms
+
+            vi /etc/inittab
+            id:3:initdefault:
+
+            yum install -y drbd83 kmod-drbd83
+
+            vi /etc/drbd.conf
+            global {
+            usage-count no;
+            }
+            common {
+            syncer { rate 100M; }
+            protocol C;
+            }
+            resource postgres {
+            startup {
+            wfc-timeout 0;
+            degr-wfc-timeout
+            120;
+            }
+            disk { on-io-error detach; }
+            on node1.author.org {
+            device /dev/drbd0;
+            disk /dev/sdb;
+            address 172.16.0.1:7791;
+            meta-disk internal;
+            }
+            on node2.author.org {
+                device /dev/drbd0;
+            disk /dev/sdb;
+            address 172.16.0.2:7791;
+            meta-disk internal;
+            }
+            }
+
+            [root@node1 ~]# drbdadm create-md postgres
+            Writing meta data...
+            initializing activity log
+            NOT initialized bitmap
+            New drbd meta data block successfully created.
+            root@node2 ~]# drbdadm create-md postgres
+            Writing meta data...
+            initializing activity log
+            NOT initialized bitmap
+            New drbd meta data block successfully created.
+
+            drbdadm up postgres
+            drbdadm -- --overwrite-data-of-peer primary postgres
+
+            [root@node1 ~]# cat /proc/drbd
+            version: 8.3.8 (api:88/proto:86-94)
+            GIT-hash: d78846e52224fd00562f7c225bcc25b2d422321d build by
+            mockbuild@builder10.centos.org, 2016-10-04 14:04:09
+            0: cs:SyncSource ro:Primary/Secondary ds:UpToDate/Inconsistent C r-
+            ---
+            ns:48128 nr:0 dw:0 dr:48128 al:0 bm:2 lo:0 pe:0 ua:0 ap:0 ep:1 wo:b
+            oos:8340188
+            [>....................] sync'ed: 0.6% (8144/8188)M delay_probe: 7
+            finish: 0:11:29 speed: 12,032 (12,032) K/sec
+
+            [root@node1 ~]# cat /proc/drbd
+            version: 8.3.8 (api:88/proto:86-94)
+            GIT-hash: d78846e52224fd00562f7c225bcc25b2d422321d build by
+            mockbuild@builder10.centos.org, 2016-10-04 14:04:09
+            0: cs:Connected ro:Primary/Secondary ds:UpToDate/UpToDate C r----
+            ns:8388316 nr:0 dw:0 dr:8388316 al:0 bm:512 lo:0 pe:0 ua:0 ap:0
+            ep:1 wo:b oos:0
+            [root@node2 ~]# cat /proc/drbd
+            version: 8.3.8 (api:88/proto:86-94)
+            GIT-hash: d78846e52224fd00562f7c225bcc25b2d422321d build by
+            mockbuild@builder10.centos.org, 2016-2016-10-04 14:04:09
+            0: cs:Connected ro:Secondary/Primary ds:UpToDate/UpToDate C r----
+            ns:0 nr:8388316 dw:8388316 dr:0 al:0 bm:512 lo:0 pe:0 ua:0 ap:0
+            ep:1 wo:b oos:0
+
+            /etc/init.d/drbd start
+
+            mkfs.ext3 /dev/drbd0
+            mount -t ext3 /dev/drbd0 /var/lib/pgsql/9.6
+            chown postgres.postgres /var/lib/pgsql/9.6
+            su - postgres
+            initdb /var/lib/pgsql/9.6/data
+            exit
+
+            echo "host all all 10.0.0.181/32 trust" >> /var/lib/pgsql/9.6/data/pg_hba.conf
+            echo "host all all 10.0.0.182/32 trust" >> /var/lib/pgsql/9.6/data/pg_hba.conf
+            echo "host all all 10.0.0.180/32 trust" >> /var/lib/pgsql/9.6/data/pg_hba.conf
+
+            vi /var/lib/pgsql/9.3/data/postgresql.conf
+            listen_addresses = '*'
+
+            service postgresql-9.6 start
+            su - postgres
+            createuser --superuser admin --pwprompt
+            su - postgres
+            createdb test
+            pgbench -i test
+            psql -U admin -d test
+            test=# select * from pgbench_tellers;
+            tid | bid | tbalance | filler
+            -----+-----+----------+--------
+            1 | 1 | 0 |
+            2 | 1 | 0 |
+            3 | 1 | 0 |
+            4 | 1 | 0 |
+            5 | 1 | 0 |
+            6 | 1 | 0 |
+            7 | 1 | 0 |
+            8 | 1 | 0 |
+            9 | 1 | 0 |
+            10 | 1 | 0 |
+            (10 registros)
+
+            service postgresql-9.6 stop
+            umount /dev/drbd0
+            drbdadm secondary postgres
+            drbdadm primary postgres
+
+            mount -t ext3 /dev/drbd0 /var/lib/pgsql/9.6
+            service postgresql-9.6 start
+            psql -u admin -d test
+            test=# select * from pgbench_tellers;
+            tid | bid | tbalance | filler
+            -----+-----+----------+--------
+            1 | 1 | 0 |
+            2 | 1 | 0 |
+            3 | 1 | 0 |
+            4 | 1 | 0 |
+            5 | 1 | 0 |
+            6 | 1 | 0 |
+            7 | 1 | 0 |
+            8 | 1 | 0 |
+            9 | 1 | 0 |
+            10 | 1 | 0 |
+
+            global {
+            usage-count no;
+            }
+            common {
+            syncer { rate 100M; }
+            protocol C;
+            }
+            resource postgres {
+            startup {
+            wfc-timeout 0;
+            degr-wfc-timeout
+            120;
+            }
+            disk { on-io-error detach; }
+            on node1.author.org {
+            device /dev/drbd0;
+            disk /dev/sdb;
+            address 172.16.0.1:7791;
+            meta-disk internal;
+            }
+            on node2.author.org {
+            device /dev/drbd0;
+            disk /dev/sdb;
+            address 172.16.0.2:7791;
+            meta-disk internal;
+            }
+            }
+
+Setting up a Postgres-XL cluster
+
+sudo groupadd pgxl
+sudo useradd -g pgxl pgxl
+yum install postgres-xl92-libs-9.2-34.1.x86_64.rpm \
+postgres-xl92-9.2-34.1.x86_64.rpm \
+postgres-xl92-server-9.2-34.1.x86_64.rpm \
+postgres-xl92-contrib-9.2-34.1.x86_64.rpm \
+postgres-xl92-gtm-9.2-34.1.x86_64.rpm
+
+[centos@ip-172-30-1-157 ~]$ cd /usr/postgres-xl-9.2/
+[centos@ip-172-30-1-157 postgres-xl-9.2]$ ls -ltrh
+total 12K
+drwxr-xr-x. 2 pgxl pgxl 4.0K Dec 3 05:32 lib
+drwxr-xr-x. 7 pgxl pgxl 4.0K Dec 3 05:32 share
+drwxr-xr-x. 2 root root 4.0K Dec 3 05:32 bin
+
+export PATH=/usr/postgres-xl-9.2/bin:$PATH
+export LD_LIBRARY_PATH=/usr/postgres-xl-9.2/lib:$LD_LIBRARY_PATH
+
+mkdir data_gtm
+initgtm -Z gtm -D /home/pgxl/data_gtm/
+--- Modify the config:
+[pgxl@ip-172-30-1-154 data_gtm]$ grep -v '^#' gtm.conf
+nodename = 'gtm_node' # Specifies the node name.
+# (changes requires restart)
+listen_addresses = '*' # Listen addresses of this GTM.
+# (changes requires restart)
+port = 6666 # Port number of
+
+[pgxl@ip-172-30-1-154 data_gtm]$ gtm -D /home/pgxl/data_gtm/ &
+[1] 5938
+[pgxl@ip-172-30-1-154 data_gtm]$ ps -ef|grep gtm
+pgxl 5938 5909 0 06:23 pts/2 00:00:00 gtm -D /home/pgxl/data_gtm/
+pgxl 5940 5909 0 06:23 pts/2 00:00:00 grep gtm
+
+[pgxl@ip-172-30-1-154 data_gtm]$ netstat -apn |grep 6666
+(Not all processes could be identified, non-owned process info
+will not be shown, you would have to be root to see it all.)
+tcp 0 0 0.0.0.0:6666 0.0.0.0:* LISTEN 5938/gtm
+tcp 0 0 :::6666 :::* LISTEN 5938/gtm
+
+mkdir data_gtm_proxy
+intigtm -Z gtm_proxy /home/pgxl/data_gtm_proxy
+--- Modify config:
+pgxl@ip-172-30-1-154 ~]$ grep -v "^#" data_gtm_proxy/gtm_proxy.conf
+nodename = 'gtm_proxy_node' # Specifies the node name.
+# (changes requires restart)
+listen_addresses = '*' # Listen addresses of this GTM.
+# (changes requires restart)
+port = 6667 # Port number of this GTM.
+gtm_host = 'localhost' # Listen address of the active GTM.
+# (changes requires restart)
+gtm_port = 6666 # Port number of the active GTM.
+# (changes requires restart)
+
+gtm_proxy -D /home/pgxl/data_gtm_proxy/ &
+[pgxl@ip-172-30-1-154 ~]$ ps -ef|grep gtm
+pgxl 7026 6952 0 16:58 pts/0 00:00:00 gtm -D /home/pgxl/data_gtm/
+pgxl 7052 6952 0 17:05 pts/0 00:00:00 gtm_proxy -D
+/home/pgxl/data_gtm_proxy/
+pgxl 7059 6952 0 17:05 pts/0 00:00:00 grep gtm
+
+mkdir data_node1
+initdb -D /home/pgxl/data_node1/ --nodename datanode1
+listen_addresses='*'
+port = 5432
+gtm_host = '172.30.1.154'
+gtm_port=6666
+
+mkdir data_node2
+initdb -D /home/pgxl/data_node2/ --nodename datanode2
+In the datanode2/postgresql.conf file:
+listen_addresses='*'
+port = 5432
+gtm_host = '172.30.1.154'
+gtm_port=6666
+
+mkdir data_node3
+initdb -D /home/pgxl/data_node3/ --nodename datanode3
+
+listen_addresses='*'
+port = 5432
+gtm_host = '172.30.1.154'
+gtm_port=6666
+listen_addresses='*'
+port = 5432
+gtm_host = '172.30.1.154'
+gtm_port=6666
+
+mkdir coord1
+initdb -D /home/pgxl/coord1/ --nodename coord1
+listen_addresses='*'
+port = 5433
+gtm_host = '172.30.1.154'
+gtm_port=6666
+
+mkdir coord2
+initdb -D /home/pgxl/coord2/ --nodename coord2
+listen_addresses='*'
+port = 5433
+gtm_host = '172.30.1.154'
+gtm_port=6666
+
+host all all 172.30.1.154/32 trust
+host all all 172.30.1.155/32 trust
+host all all 172.30.1.156/32 trust
+host all all 172.30.1.157/32 trust
+
+On node1:
+postgres --datanode -D /home/pgxl/data_node1 &
+On node2:
+postgres --datanode -D /home/pgxl/data_node2 &
+postgres --coordinator -D /home/pgxl/coord1 &
+On node3:
+postgres --datanode -D /home/pgxl/data_node3 &
+postgres --coordinator -D /home/pgxl/coord2 &
+On node4:
+postgres --datanode -D /home/pgxl/data_node4 &
+
+Example of processes, on the GTM and GTM proxy:
+[pgxl@ip-172-30-1-154 ~]$ ps -ef|grep gtm
+pgxl 7026 6952 0 16:58 pts/0 00:00:00 gtm -D /home/pgxl/data_gtm/
+pgxl 7052 6952 0 17:05 pts/0 00:00:00 gtm_proxy -D
+/home/pgxl/data_gtm_proxy/
+pgxl 7152 6952 0 17:36 pts/0 00:00:00 grep gtm
+
+[pgxl@ip-172-30-1-154 ~]$ ps -ef|grep postgres
+pgxl 7128 6952 0 17:26 pts/0 00:00:00 postgres --datanode -D
+/home/pgxl/data_node1
+
+[pgxl@ip-172-30-1-156 ~]$ ps -ef|grep postgres
+pgxl 7151 6922 0 17:35 pts/0 00:00:00 postgres --datanode -D
+/home/pgxl/data_node3
+
+CREATE NODE coord1 WITH (TYPE = 'coordinator', HOST = '172.30.1.155',
+PORT = 5433);
+CREATE NODE coord2
+WITH (TYPE = 'coordinator', HOST = '172.30.1.156',
+PORT = 5433);
+CREATE NODE datanode1
+WITH (TYPE = 'datanode', HOST = '172.30.1.154',
+PORT = 5432);
+CREATE NODE datanode2
+WITH (TYPE = 'datanode', HOST = '172.30.1.155',
+PORT = 5432, PRIMARY, PREFERRED);
+CREATE NODE datanode3
+WITH (TYPE = 'datanode', HOST = '172.30.1.156',
+PORT = 5432);
+CREATE NODE datanode4
+WITH (TYPE = 'datanode', HOST = '172.30.1.157',
+PORT = 5432);
+
+On node2:
+psql -d postgres -p 5433
+postgres=# begin;
+BEGIN
+postgres=# update pgxc_node set node_port=5433 where
+node_name='coord1'; -- check if it's updated or not before you
+commit.
+UPDATE 1
+postgres=# commit;
+COMMIT
+On node3:
+psql -d postgres -p 5433
+postgres=# begin;
+BEGIN
+postgres=# update pgxc_node set node_host='172.30.1.156' where
+node_name='coord2'; check if it's updated or not before you commit.
+UPDATE 1
+postgres=# commit;
+
+On node1:
+psql -d postgres -p 5432
+postgres=# begin;
+BEGIN
+postgres=# alter node datanode1 with (TYPE = 'datanode',
+HOST = '172.30.1.154', PORT = 5432);
+ALTER NODE
+postgres=# select * from pg_catalog.pgxc_node ;
+node_name | node_type | node_port | node_host | nodeis_primary |
+nodeis_preferred | node_id
+-----------+-----------+-----------+--------------+----------------
++------------------+-------------
+coord1 | C | 5433 | 172.30.1.155 | f | f | 1885696643
+coord2 | C | 5433 | 172.30.1.156 | f | f | -1197102633
+datanode2 | D | 5432 | 172.30.1.155 | t | t | -905831925
+datanode3 | D | 5432 | 172.30.1.156 | f | f | -1894792127
+datanode4 | D | 5432 | 172.30.1.157 | f | f | -1307323892
+datanode1 | D | 5432 | 172.30.1.154 | f | f | 888802358
+(6 rows)
+postgres=# commit;
+COMMIT
+On node2:
+psql -d postgres -p 5432
+postgres=# begin;
+BEGIN
+postgres=# alter node datanode2 with (TYPE = 'datanode',
+HOST = '172.30.1.155', PORT = 5432, PRIMARY, PREFERRED);
+postgres=# select * from pgxc_node;
+node_name | node_type | node_port | node_host | nodeis_primary |
+nodeis_preferred | node_id
+-----------+-----------+-----------+--------------+----------------
++------------------+-------------
+coord1 | C | 5433 | 172.30.1.155 | f | f | 1885696643
+coord2 | C | 5433 | 172.30.1.156 | f | f | -1197102633
+datanode1 | D | 5432 | 172.30.1.154 | f | f | 888802358
+datanode3 | D | 5432 | 172.30.1.156 | f | f | -1894792127
+datanode4 | D | 5432 | 172.30.1.157 | f | f | -1307323892
+datanode2 | D | 5432 | 172.30.1.155 | t | t | -905831925
+(6 rows)
+postgres=# commit;
+COMMIT
+On node3:
+psql -d postgres -p 5432
+postgres=# begin;
+BEGIN
+postgres=# alter node datanode3 with (TYPE = 'datanode',
+HOST = '172.30.1.156', PORT = 5432);
+postgres=# select * from pgxc_node;
+node_name | node_type | node_port | node_host | nodeis_primary |
+nodeis_preferred | node_id
+-----------+-----------+-----------+--------------+----------------
++------------------+-------------
+coord1 | C | 5433 | 172.30.1.155 | f | f | 1885696643
+coord2 | C | 5433 | 172.30.1.156 | f | f | -1197102633
+datanode1 | D | 5432 | 172.30.1.154 | f | f | 888802358
+datanode2 | D | 5432 | 172.30.1.155 | t | t | -905831925
+datanode4 | D | 5432 | 172.30.1.157 | f | f | -1307323892
+datanode3 | D | 5432 | 172.30.1.156 | f | f | -1894792127
+(6 rows)
+postgres=# commit;
+COMMIT
+
+On node4:
+psql -d postgres -p 5432
+postgres=# begin;
+BEGIN
+postgres=#
+postgres=# alter node datanode4 with (TYPE = 'datanode',
+HOST = '172.30.1.157', PORT = 5432);
+postgres=# select * from pgxc_node;
+node_name | node_type | node_port | node_host | nodeis_primary|
+nodeis_preferred | node_id
+-----------+-----------+-----------+--------------+----------------
++------------------+-------------
+coord1 | C | 5433 | 172.30.1.155 | f | f | 1885696643
+coord2 | C | 5433 | 172.30.1.156 | f | f | -1197102633
+datanode1 | D | 5432 | 172.30.1.154 | f | f | 888802358
+datanode2 | D | 5432 | 172.30.1.155 | t | t | -905831925
+datanode3 | D | 5432 | 172.30.1.156 | f | f | -1894792127
+datanode4 | D | 5432 | 172.30.1.157 | f | f | -1307323892
+(6 rows)
+postgres=# commit;
+COMMIT
+
+create table dist_repl(id int) distribute by replication to node
+(datanode1, datanode2, datanode3, datanode4);
+insert into dist_repl values(generate_series(1,8));
+
+On each datanode:
+select * from dist_tab;
+
+Distribute by hash on the coordinator:
+create table dist_hash(id int) distribute by hash(id) to
+node(datanode1, datanode2, datanode3, datanode4);
+insert into dist_hash values(generate_series(1,8));
+
+On the datanode:
+select * from dist_hash;

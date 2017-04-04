@@ -1,0 +1,651 @@
+CHAPTER 8
+
+Checking active sessions
+            postgres=# SHOW track_activities;
+            track_activities
+            ------------------
+            on
+            (1 row)
+
+            $ pgbench -i; pgbench -c 4 -T 100
+            creating tables...
+            100000 of 100000 tuples (100%) done (elapsed 0.17s, remaining 0.00 s)
+            vacuum...
+            set primary keys...
+            done.
+            starting vacuum...end.
+
+            postgres=# SELECT
+            datname,
+            usename,
+            application_name,
+            now()-backend_start AS "Session duration",
+            pid
+            FROM
+            pg_stat_activity
+            WHERE
+            state='active';
+            datname | usename | application_name | Session duration | pid
+            ---------+----------+------------------+------------------+----
+            postgres | postgres | psql.bin | 00:06:41.74497 |2751
+            postgres | postgres | pgbench | 00:00:46.884915 |2796
+            postgres | postgres | pgbench | 00:00:46.883277 |2797
+            postgres | postgres | pgbench | 00:00:46.881618 |2798
+            (4 rows)
+
+            ALTER DATABASE <database name> SET track_activities TO false;
+
+
+Finding out what the users are currently running
+            $ psql -h localhost -U postgres
+            postgres=# SELECT
+            datname,
+            usename,
+            application_name,
+            now()-backend_start AS "Session duration",
+            pid,
+            query
+            FROM
+            pg_stat_activity
+            WHERE
+            state='active';
+            -[ RECORD 1 ]----+-------------------------------
+            datname | postgres
+            usename | postgres
+            application_name | pgbench
+            Session duration | 00:00:08.470704
+            pid | 29323
+            query | UPDATE pgbench_tellers SET
+            tbalance = tbalance + 2331 WHERE tid = 9;
+            -[ RECORD 2 ]----+-------------------------------
+            datname | postgres
+            usename | postgres
+            application_name | pgbench
+            Session duration | 00:00:08.466858
+            pid | 29324
+            query | UPDATE pgbench_tellers SET
+            tbalance = tbalance + -1438 WHERE tid = 7;
+            -[ RECORD 3 ]----+-------------------------------
+            datname | postgres
+            usename | postgres
+            application_name | psql
+            Session duration | 00:00:05.234634
+            pid | 29580
+            query | SELECT
+            | datname,
+            | usename,
+            | application_name,
+            | now()-backend_start AS
+            "Session duration",
+            | pid,
+            | query
+            | FROM
+            | pg_stat_activity
+            | WHERE
+            | state='active';
+
+
+Finding blocked sessions
+
+            $ pgbench -i; pgbench -c 4 -T 100
+            $ psql -h localhost -U postgres
+            postgres=#
+            SELECT
+            datname,
+            usename,
+            application_name,
+            now()-backend_start AS "Session duration",
+            pid,
+            query
+            FROM
+            pg_stat_activity
+            WHERE
+            state='active'
+            AND wait_event IS NOT NULL;
+            -[ RECORD 1 ]----+-------------------------------
+            datname | postgres
+            usename | postgres
+            application_name | pgbench
+            Session duration | 00:01:37.019791
+            pid | 17853
+            query | UPDATE pgbench_tellers SET
+            tbalance = tbalance + 3297 WHERE tid = 5;
+            -[ RECORD 2 ]----+-------------------------------
+            datname | postgres
+            usename | postgres
+            application_name | pgbench
+            Session duration | 00:01:37.016008
+            pid | 17854
+            query | UPDATE pgbench_branches SET
+            bbalance = bbalance + 2742 WHERE bid = 1;
+
+            postgres=#
+            SELECT bl.pid AS blocked_pid,
+            a.usename AS blocked_user,
+            ka.query AS
+            current_or_recent_statement_in_blocking_process,
+            ka.state AS
+            state_of_blocking_process,
+            now() - ka.query_start AS blocking_duration,
+            kl.pid AS blocking_pid,
+            ka.usename AS blocking_user,
+            a.query AS blocked_statement,
+            now() - a.query_start AS blocked_duration
+            FROM pg_catalog.pg_locks bl
+            JOIN pg_catalog.pg_stat_activity a ON a.pid =
+            bl.pid
+            JOIN pg_catalog.pg_locks kl ON
+            kl.transactionid = bl.transactionid AND kl.pid
+            != bl.pid
+            JOIN pg_catalog.pg_stat_activity ka ON ka.pid =
+            kl.pid
+            WHERE NOT bl.GRANTED;
+            -[ RECORD 1 ]--------------------------+--------
+            blocked_pid | 8724
+            blocked_user |postgres
+            current_or_recent_statement_in_blocking_process
+            |UPDATE
+            pgbench_branches SET bbalance = bbalance +
+            -1632 WHERE bid = 1;
+            state_of_blocking_process | idle in
+            transaction
+            blocking_duration |
+            00:00:00.003981
+            blocking_pid | 8726
+            blocking_user |postgres
+            blocked_statement | UPDATE
+            pgbench_tellers SET tbalance = tbalance + 4600
+            WHERE tid = 3;
+            blocked_duration |
+            00:00:00.00222
+
+            In session 1:
+            postgres=# BEGIN;
+            BEGIN
+            postgres=# LOCK TABLE test IN EXCLUSIVE MODE;
+            LOCK TABLE
+            In session 2:
+            postgres=# INSERT INTO test VALUES (10);
+
+            postgres=#
+            SELECT
+            act1.query as blocking_query,
+            act2.query as blocked_query,
+            l1.pid AS blocked_pid,
+            l2.pid AS blocking_pid,
+            l1.relation::regclass
+            FROM
+            pg_locks l1,
+            pg_locks l2,
+            pg_stat_activity act1,
+            pg_stat_activity act2
+            WHERE
+            l1.granted=true AND
+            l2.granted=false AND
+            l1.pid=act1.pid AND
+            l2.pid=act2.pid AND
+            l1.relation=l2.relation;
+            -[ RECORD 1 ]--+------------------------------
+            blocking_query | LOCK TABLE test IN EXCLUSIVE
+            MODE;
+            blocked_query | INSERT INTO test VALUES(10);
+            blocked_pid | 10417
+            blocking_pid | 8913
+            relation | test
+
+            In session 1:
+            postgres=# BEGIN;
+            BEGIN
+            postgres=# INSERT INTO test VALUES (10);
+            INSERT 0 1
+            postgres=# PREPARE TRANSACTION 'testing';
+            PREPARE TRANSACTION
+            postgres=# END;
+            WARNING: there is no transaction in progress
+            COMMIT
+            postgres=# SELECT * FROM test;
+            t
+            ---
+            (0 rows)
+            In session 2:
+            postgres=# ALTER TABLE test ADD col2 INT;
+
+            postgres=# SELECT locktype, relation::regclass, virtualtransaction FROM
+            pg_locks WHERE locktype ='relation';
+            locktype | relation | virtualtransaction
+            ----------+----------+--------------------
+            relation | pg_locks | 4/34
+            relation | test | -1/452455
+            (2 rows)
+
+            postgres=# SELECT * FROM pg_prepared_xacts WHERE
+            transaction = '452455';
+            transaction | gid | prepared | owner |
+            database
+            ------------+---------+--------------------- +---------+---------
+            -
+            452455 | testing | 2016-08-20 19:06:28.534232+05:30| postgres|
+            postgres
+            (1 row)
+
+            In session 1:
+            postgres=# BEGIN;
+            BEGIN
+            postgres=# SELECT jobid FROM dataset FOR UPDATE SKIP LOCKED LIMIT 1;
+            jobid
+            -------
+            1
+            (1 row)
+            In session 2:
+            postgres=# BEGIN;
+            BEGIN
+            postgres=# SELECT jobid FROM dataset FOR UPDATE SKIP LOCKED LIMIT 1;
+            jobid
+            -------
+            2
+            (1 row)
+
+            Dealing with deadlocks
+
+            Session 1
+            BEGIN;
+            UPDATE test SET t=1 WHERE t=1;
+            UPDATE test SET t=2 WHERE t=2; --
+            Waiting for the record 2 which is
+            locked in session 2
+            ERROR: deadlock detected
+            DETAIL: Process 10417 waits for
+            ShareLock on transaction 452459;
+            blocked by process 8913.
+            Process 8913 waits for ShareLock on
+            transaction 452458; blocked by
+            process 10417.
+            ROLLBACK;
+
+            Session 2
+            BEGIN;
+            UPDATE test SET t=2 WHERE t=2;
+            UPDATE test SET t=1 WHERE t=1; --
+            Waiting for the record 1 which is
+            locked in session 1
+            END;
+
+            Session 1
+            BEGIN;
+            SELECT * FROM test WHERE t
+            IN(1, 2) FOR UPDATE;
+            UPDATE test SET t=1 WHERE t=1;
+            UPDATE test SET t=2 WHERE t=2;
+            END;
+
+            Session 2
+            BEGIN;
+            SELECT * FROM test WHERE t IN(1, 2) FOR
+            UPDATE; --Waiting for the session to release
+            the lock on records 1, 2
+            UPDATE test SET t=2 WHERE t=2; UPDATE test
+            SET t=1 WHERE t=1;
+            END;
+
+
+            Session 1
+            BEGIN
+            SELECT pg_advisory_lock(t) FROM
+            test WHERE t IN (1,2);
+            UPDATE test SET t=1 WHERE t=1;
+            UPDATE test SET t=2 WHERE t=2;
+            SELECT pg_advisory_unlock(t) FROM
+            test WHERE t IN(1,2);
+            END;
+
+            Session 2
+            BEGIN
+            SELECT pg_advisory_lock(t) FROM test
+            WHERE t IN (1,2); --Waiting for the
+            session1 to release lock
+            UPDATE test SET t=2 WHERE t=2; UPDATE
+            test SET t=1 WHERE t=1;
+            SELECT pg_advisory_unlock(t) FROM test
+            WHERE t IN(1,2);
+            END;
+
+            Table access statistics
+
+            postgres=# CREATE TABLE test (t INT);
+            CREATE TABLE
+            postgres=# INSERT INTO test VALUES(1);
+            INSERT 0 1
+            postgres=# UPDATE test SET t=10;
+            UPDATE 1
+            postgres=# DELETE FROM test;
+            DELETE 1
+            postgres=#SELECT relname, n_tup_ins "Total Inserts", n_tup_upd "Total
+            Updates", n_tup_del "Total deletes" FROM pg_stat_user_tables WHERE
+            relname='test';
+            -[ RECORD 1 ]-+-----
+            relname | test
+            Total Inserts | 1
+            Total Updates | 1
+            Total deletes | 1
+
+            postgres=# SELECT relname, seq_scan, seq_tup_read, idx_scan, idx_tup_fetch
+            FROM pg_stat_user_tables WHERE relname='test';
+            -[ RECORD 1 ]-+-------
+            relname | test
+            seq_scan | 12
+            seq_tup_read | 100004
+            idx_scan | 4
+            idx_tup_fetch | 50003
+
+            postgres=# SELECT relname, last_autovacuum, last_autoanalyze,
+            autovacuum_count, autoanalyze_count FROM pg_stat_user_tables WHERE
+            relname='test';
+            -[ RECORD 1 ]-----+---------------------------------
+            relname | test
+            last_autovacuum | 2016-09-08 13:31:45.313314+05:30
+            last_autoanalyze | 2016-09-08 13:31:45.451255+05:30
+            autovacuum_count | 2
+            autoanalyze_count | 2
+
+            postgres=# UPDATE test SET t=1000;
+            UPDATE 100000
+            postgres=# SELECT relname, n_mod_since_analyze FROM pg_stat_user_tables
+            WHERE relname='test';
+            -[ RECORD 1 ]-------+---------------------------------
+            relname | test
+            n_mod_since_analyze | 100000
+
+            postgres=# SELECT relname, heap_blks_read "Disk blks", heap_blks_hit "Cache
+            blks" FROM pg_statio_user_tables WHERE relname = 'test';
+            -[ RECORD 1 ]-------
+            relname | test
+            Disk blks | 890
+            Cache blks | 1130524
+
+Logging slow statements
+            postgres=# ALTER SYSTEM SET log_min_duration_statement to '5s';
+            ALTER SYSTEM
+            postgres=# SELECT pg_reload_conf();
+            pg_reload_conf
+            ----------------
+            t
+            (1 row)
+
+            ALTER SYSTEM SET log_lock_waits to 'on'; ALTER SYSTEM SET log_temp_files to '0;.
+
+            postgres=# SELECT now()-query_start Duration, query, pid FROM
+            pg_stat_activity WHERE pid!=pg_backend_pid();
+            duration | query | pid
+            ----------------+------------------------+------
+            00:00:25.19148 | SELECT pg_sleep(1000); | 2187
+            (1 row)
+
+Determining disk usage
+            postgres=# CREATE TABLE bigtable(c char(10240000));
+            CREATE TABLE
+            postgres=# INSERT INTO bigtable VALUES('a');
+            INSERT 0 1
+            postgres=# SELECT pg_column_size(c) FROM bigtable;
+            pg_column_size
+            ----------------
+            117225
+            (1 row)
+
+            postgres=# SELECT pg_size_pretty(pg_total_relation_size('test'));
+            pg_size_pretty
+            ----------------
+            15 MB
+            (1 row)
+
+            postgres=# SELECT pg_size_pretty(pg_database_size('postgres'));
+            pg_size_pretty
+            ----------------
+            2860 MB
+            (1 row)
+
+            postgres=# SELECT pg_size_pretty(pg_tablespace_size('test'));
+            pg_size_pretty
+            ----------------
+            3568 kB
+            (1 row)
+
+            postgres=# SELECT oid FROM pg_database WHERE datname = 'postgres';
+            oid
+            -------
+            12641
+            (1 row)
+            $ cd ${PGDATA DIRECTORY}/base/12641/
+            $ du -h .
+            2.8G
+
+Preventing page corruption
+
+            $ initdb -D pgdata --data-checksums
+            The files belonging to this database system will be owned by user
+            "postgres".
+            This user must also own the server process.
+            The database cluster will be initialized with locale "C".
+            The default database encoding has accordingly been set to "SQL_ASCII".
+            The default text search configuration will be set to "english".
+            Data page checksums are enabled.
+            creating directory pgdata ... ok
+            creating subdirectories ... ok
+
+            $ pg_controldata pgdata|grep checksum
+            Data page checksum version: 1
+
+            postgres=# SELECT * FROM test;
+            ERROR: invalid page in block 0 of relation base/215681/429942
+
+            postgres=# SET client_min_messages TO WARNING;
+            SET
+            postgres=# SET zero_damaged_pages to on;
+            SET
+            postgres=# SELECT COUNT(*) FROM test;
+            WARNING: invalid page in block 0 of relation base/215681/429942; zeroing
+            out page
+            count
+            -------
+            776
+            (1 row)
+            postgres=# SELECT COUNT(*) FROM test;
+            WARNING: page verification failed, calculated checksum 47298 but expected
+            18241
+            ERROR: invalid page in block 0 of relation base/12411/16384
+            postgres=# SET ignore_checksum_failure TO true;
+            SET
+            postgres=# SET zero_damaged_pages TO on;
+            SET
+            postgres=# SELECT COUNT(*) FROM test;
+            WARNING: page verification failed, calculated checksum 47298 but expected
+            18241
+            WARNING: invalid page in block 24 of relation base/12411/16384; zeroing
+            out page
+            WARNING: page verification failed, calculated checksum 44553 but expected
+            56495
+            WARNING: page verification failed, calculated checksum 30647 but expected
+            42827
+            WARNING: invalid page in block 24 of relation base/12411/16384; zeroing
+            out page
+            count
+            -------
+            9481
+            (1 row)
+
+            postgres=# CREATE EXTENSION pageinspect;
+            CREATE EXTENSION
+            postgres=# SELECT * FROM page_header(get_raw_page('test', 0));
+            lsn | checksum | flags | lower | upper | special | pagesize |
+            version | prune_xid
+            -----------+----------+-------+-------+-------+---------+----------+-------
+            --+-----------
+            0/1ACE940 | -9900 | 0 | 28 | 8160 | 8192 | 8192 |
+            4 | 0
+            (1 row)
+
+Routine reindexing
+            postgres=# CREATE EXTENSION pgstattuple ;
+            CREATE EXTENSION
+            postgres=# SELECT * FROM pgstatindex('test_idx');
+            -[ RECORD 1 ]------+--------
+            version | 2
+            tree_level | 2
+            index_size | 22478848
+            root_block_no | 412
+            internal_pages | 10
+            leaf_pages | 2733
+            empty_pages | 0
+            deleted_pages | 0
+            avg_leaf_density | 90.06
+            leaf_fragmentation | 0
+
+            postgres=# EXPLAIN ANALYZE SELECT * FROM test WHERE t BETWEEN 999 AND 9999;
+            QUERY PLAN
+            ---------------------------------------------------------------------------
+            -------------------------------------------------
+            Index Only Scan using test_idx on test (cost=0.29..331.17 rows=9144
+            width=4) (actual time=0.063..3.765 rows=9001 loops=1)
+            Index Cond: ((t >= 999) AND (t <= 9999))
+            Heap Fetches: 9001
+            Planning time: 0.585 ms
+            Execution time: 4.124 ms
+            (5 rows)
+            Time: 5.804 ms
+
+            postgres=# UPDATE test SET t=1000 WHERE t%3=0;
+            UPDATE 33333
+            postgres=# EXPLAIN ANALYZE SELECT * FROM test WHERE t BETWEEN 999 AND 9999;
+            QUERY PLAN
+            ---------------------------------------------------------------------------
+            ----------------------------------------------------
+            Index Only Scan using test_idx on test (cost=0.29..448.85 rows=12178
+            width=4) (actual time=0.095..21.316 rows=39333 loops=1)
+            Index Cond: ((t >= 999) AND (t <= 9999))
+            Heap Fetches: 42334
+            Planning time: 0.084 ms
+            Execution time: 22.682 ms
+            (5 rows)
+            Time: 30.249 ms
+            postgres=# SELECT * FROM pgstatindex('test_idx');
+            -[ RECORD 1 ]------+--------
+            version | 2
+            tree_level | 1
+            index_size | 3219456
+            root_block_no | 3
+            internal_pages | 0
+            leaf_pages | 392
+            empty_pages | 0
+            deleted_pages | 0
+            avg_leaf_density | 62.88
+            leaf_fragmentation | 26.79
+
+            postgres=# REINDEX INDEX test_idx;
+            REINDEX
+            postgres=# SELECT * FROM pgstatindex('test_idx');
+            -[ RECORD 1 ]------+--------
+            version | 2
+            tree_level | 1
+            index_size | 2252800
+            root_block_no | 3
+            internal_pages | 0
+            leaf_pages | 274
+            empty_pages | 0
+            deleted_pages | 0
+            avg_leaf_density | 89.33
+            leaf_fragmentation | 0
+            postgres=# EXPLAIN ANALYZE SELECT * FROM test WHERE t BETWEEN 999 AND 9999;
+            QUERY PLAN
+            ---------------------------------------------------------------------------
+            ----------------------------------------------------
+            Index Only Scan using test_idx on test (cost=0.29..1222.95 rows=39333
+            width=4) (actual time=0.035..8.646 rows=39333 loops=1)
+            Index Cond: ((t >= 999) AND (t <= 9999))
+            Heap Fetches: 0
+            Planning time: 0.210 ms
+            Execution time: 10.024 ms
+            (5 rows)
+
+Generating planner statistics
+            postgres=# CREATE TABLE test(t INT);
+            CREATE TABLE
+            postgres=# SELECT COUNT(*) FROM pg_stats WHERE tablename = 'test';
+            count
+            -------
+            0
+            (1 row)
+            postgres=# INSERT INTO test VALUES(generate_series(1, 1000));
+            INSERT 0 1000
+            postgres=# ANALYZE test;
+            ANALYZE
+            postgres=# SELECT COUNT(*) FROM pg_stats WHERE tablename = 'test';
+            count
+            -------
+            1
+            (1 row)
+
+Tuning with background writer statistics
+            postgres=# SELECT pg_stat_reset_shared('bgwriter');
+            pg_stat_reset_shared
+            ----------------------
+            (1 row)
+            $ cat /tmp/test.sql
+            INSERT INTO test VALUES(generate_series(1, 10000));
+            SELECT * FROM test ORDER BY t DESC LIMIT 1000;
+            DELETE FROM test WHERE t%7=0;
+            UPDATE test SET t=100;
+            $ bin/pgbench -c 90 -T 1000 -f /tmp/test.sql
+
+            postgres=# SELECT * FROM pg_stat_bgwriter;
+            -[ RECORD 1 ]---------+---------------------------------
+            checkpoints_timed | 19
+            checkpoints_req | 445
+            checkpoint_write_time | 551012
+            checkpoint_sync_time | 48577
+            buffers_checkpoint | 1974899
+            buffers_clean | 150281
+            maxwritten_clean | 1470
+            buffers_backend | 1883063
+            buffers_backend_fsync | 0
+            buffers_alloc | 1880980
+            stats_reset | 2016-09-20 23:58:12.183039+05:30
+
+            postgres=# SHOW checkpoint_timeout;
+            checkpoint_timeout
+            --------------------
+            1min
+            (1 row)
+
+            postgres=# SHOW max_wal_size;
+            max_wal_size
+            --------------
+            192MB
+            (1 row)
+
+            postgres=# SHOW block_size;
+            block_size
+            ------------
+            8192
+            (1 row)
+
+postgres=# SHOW bgwriter_delay ;
+bgwriter_delay
+----------------
+10s
+(1 row)
+
+postgres=# SHOW bgwriter_lru_maxpages ;
+bgwriter_lru_maxpages
+-----------------------
+100
+(1 row)
+postgres=# SHOW bgwriter_lru_multiplier;
+bgwriter_lru_multiplier
+-------------------------
+2
+(1 row)
+
+postgres=# SHOW shared_buffers;
+shared_buffers
+----------------
+128MB
+(1 row)

@@ -1,0 +1,1069 @@
+CHAPTER 11
+
+Using sample data sets
+            $ psql postgres
+            postgres=# CREATE USER benchmarksql WITH ENCRYPTED PASSWORD 'benchmarksql';
+            postgres=# CREATE DATABASE benchmarksql OWNER benchmarksql;
+
+            $ ant
+            Buildfile: /Users/dineshkumar/Downloads/benchmarksql- 5.0/build.xml
+            init:
+            compile:
+            [javac] Compiling 11 source files to
+            /Users/dineshkumar/Downloads/benchmarksql-5.0/build
+            dist:
+            [jar] Building jar:
+            /Users/dineshkumar/Downloads/benchmarksql-5.0/dist/BenchmarkSQL-5.0.jar
+            BUILD SUCCESSFUL
+            Total time: 2 seconds
+
+            $ cp run/sample.postgresql.properties run/postgres_benchmark.prop
+
+            $ cat postgres_benchmark.prop
+            db=postgres
+            driver=org.postgresql.Driver
+            conn=jdbc:postgresql://localhost:5432/benchmarksql
+            user=benchmarksql
+            password=benchmarksql
+
+            $ ./runDatabaseBuild.sh postgres_benchmark.prop
+            # ------------------------------------------------------------
+            # Loading SQL file ./sql.common/tableCreates.sql
+            # ------------------------------------------------------------
+            ...
+            ...
+            Worker 000: Loading ITEM
+            Worker 001: Loading Warehouse 1
+            Worker 002: Loading Warehouse 2
+            Worker 003: Loading Warehouse 3
+            Worker 000: Loading ITEM done
+            Worker 000: Loading Warehouse 4
+            ...
+            ...
+            # ------------------------------------------------------------
+            # Loading SQL file ./sql.postgres/buildFinish.sql
+            # ------------------------------------------------------------
+            -- ----
+            -- Extra commands to run after the tables are created, loaded,
+            -- indexes built and extra's created.
+            -- PostgreSQL version.
+            -- ----
+            vacuum analyze;
+
+            postgres=# SELECT pg_size_pretty(pg_database_size('benchmarksql'));
+            pg_size_pretty
+            ----------------
+            1150 MB
+            (1 row)
+
+Timing overhead
+
+            $ pg_test_timing -d 3
+            Testing timing overhead for 3 seconds.
+            Per loop time including overhead: 52.83 nsec
+            Histogram of timing durations:
+            < usec % of total count
+            1 94.78551 53828766
+            2 5.21020 2958875
+            4 0.00084 475
+            8 0.00077 436
+            16 0.00229 1300
+            32 0.00028 157
+            64 0.00007 41
+            128 0.00001 7
+            256 0.00002 13
+            512 0.00000 1
+            1024 0.00001 4
+            2048 0.00000 1
+            4096 0.00001 4
+
+Studying hot and cold cache behavior
+
+            benchmarksql=# CREATE EXTENSION pg_buffercache ;
+            CREATE EXTENSION
+            benchmarksql=# CREATE EXTENSION pg_prewarm ;
+            CREATE EXTENSION
+
+            benchmarksql=# SELECT COUNT(*) FROM pg_buffercache WHERE
+            relfilenode::regclass::text ~ 'bmsql_';
+            count
+            -------
+            0
+            (1 row)
+
+            benchmarksql=# SELECT heap_blks_read, heap_blks_hit FROM
+            pg_statio_user_tables WHERE relname = 'bmsql_customer';
+            heap_blks_read | heap_blks_hit
+            ----------------+---------------
+            0 | 0
+            (1 row)
+
+            benchmarksql=# EXPLAIN (ANALYZE, BUFFERS) SELECT * FROM
+            bmsql_customer ;
+            QUERY PLAN
+            -------------------------------------------------------------------
+            Seq Scan on bmsql_customer (cost=0.00..28211.00 rows=300000
+            width=557) (actual time=39.086..3211.754 rows=300000 loops=1)
+            Buffers: shared read=25211
+            Planning time: 94.650 ms
+            Execution time: 3232.508 ms
+            (4 rows)
+
+            benchmarksql=# SELECT heap_blks_read, heap_blks_hit FROM
+            pg_statio_user_tables WHERE relname = 'bmsql_customer';
+            heap_blks_read | heap_blks_hit
+            ----------------+---------------
+            25211 | 0
+            (1 row)
+
+            benchmarksql=# SELECT COUNT(*) FROM pg_buffercache WHERE
+            relfilenode::regclass::text = 'bmsql_customer';
+            count
+            -------
+            32
+            (1 row)
+
+            benchmarksql=# EXPLAIN (ANALYZE, BUFFERS) SELECT * FROM bmsql_customer;
+            QUERY PLAN
+            ---------------------------------------------------------------------------
+            ----------------------------------------------
+            Seq Scan on bmsql_customer (cost=0.00..28211.00 rows=300000 width=557)
+            (actual time=0.034..92.899 rows=300000 loops=1)
+            Buffers: shared hit=32 read=25179
+            Planning time: 0.066 ms
+            Execution time: 111.866 ms
+            (4 rows)
+
+            benchmarksql=# SELECT * FROM pg_prewarm('bmsql_customer', 'buffer');
+            pg_prewarm
+            ------------
+            25211
+            (1 row)
+            benchmarksql=# SELECT COUNT(*) FROM pg_buffercache WHERE
+            relfilenode::regclass::text = 'bmsql_customer';
+            count
+            -------
+            16319
+            (1 row)
+
+            benchmarksql=# SHOW shared_buffers ;
+            shared_buffers
+            ----------------
+            128MB
+            (1 row)
+
+            benchmarksql=# EXPLAIN (ANALYZE, BUFFERS) SELECT * FROM bmsql_customer ;
+            QUERY PLAN
+            ---------------------------------------------------------------------------
+            ----------------------------------------------
+            Seq Scan on bmsql_customer (cost=0.00..28211.00 rows=300000 width=557)
+            (actual time=0.022..81.067 rows=300000 loops=1)
+            Buffers: shared hit=16318 read=8893
+            Planning time: 0.065 ms
+            Execution time: 100.300 ms
+            (4 rows)
+
+Clearing the cache
+
+            benchmarksql=# SELECT pg_prewarm('bmsql_customer', 'buffer');
+            pg_prewarm
+            ------------
+            25211
+            (1 row)
+
+            benchmarksql=# EXPLAIN (ANALYZE, BUFFERS) SELECT * FROM
+            bmsql_customer;
+            QUERY PLAN
+            -------------------------------------------------------------------
+            ------------------------------------------------
+            Seq Scan on bmsql_customer (cost=0.00..28211.00 rows=300000
+            width=557) (actual time=0.013..65.337 rows=300000 loops=1)
+            Buffers: shared hit=16101 read=9110
+            Planning time: 204.910 ms
+            Execution time: 83.123 ms
+            (4 rows)
+
+            $ pg_ctl -D data stop -mf
+            waiting for server to shut down...... done
+            server stopped
+
+            # sync
+            # echo 3 >/proc/sys/vm/drop_caches
+
+            $ pg_ctl -D data start
+            server starting
+
+            benchmarksql=# EXPLAIN (ANALYZE, BUFFERS) SELECT * FROM
+            bmsql_customer;
+            QUERY PLAN
+            ------------------------------------------------------------------
+            ----------------------------------------------------------
+            Seq Scan on bmsql_customer (cost=0.00..28211.00 rows=300000
+            width=557) (actual time=29.491..1451.221 rows=300000 loops=1)
+            Buffers: shared read=25211
+            Planning time: 3.430 ms
+            Execution time: 1488.079 ms
+            (4 rows)
+
+Query plan node structure
+
+            benchmarksql=# EXPLAIN SELECT * FROM bmsql_customer WHERE c_id=0;
+            QUERY PLAN
+            ---------------------------------------------------------------------
+            ---------------------------
+            Index Scan using bmsql_customer_pkey on bmsql_customer
+            (cost=0.42..7092.08 rows=98 width=557)
+            Index Cond: (c_id = 0)
+            (2 rows)
+
+            benchmarksql=# EXPLAIN SELECT * FROM bmsql_customer, bmsql_warehouse
+            WHERE c_id=0 AND c_w_id=w_id ORDER BY c_since;
+            QUERY PLAN
+            -----------------------------------------------------------------------
+            ------------------------------------
+            Sort (cost=6328.89..6329.14 rows=98 width=637)
+            Sort Key: bmsql_customer.c_since
+            -> Nested Loop (cost=0.42..6325.65 rows=98 width=637)
+            -> Seq Scan on bmsql_warehouse (cost=0.00..1.10 rows=10
+            width=80)
+            -> Index Scan using bmsql_customer_pkey on bmsql_customer
+            (cost=0.42..632.36 rows=10 width=557)
+            Index Cond: ((c_w_id = bmsql_warehouse.w_id) AND (c_id =
+            0))
+            (6 rows)
+
+            benchmarksql=# EXPLAIN ANALYZE SELECT * FROM bmsql_customer,
+            bmsql_warehouse WHERE c_id=0 AND c_w_id=w_id ORDER BY c_since;
+            QUERY PLAN
+            -----------------------------------------------------------------------
+            ---------------------------------------------------------------------------
+            ----
+            Sort (cost=6328.89..6329.14 rows=98 width=637) (actual
+            time=34.858..34.858 rows=0 loops=1)
+            Sort Key: bmsql_customer.c_since
+            Sort Method: quicksort Memory: 25kB
+            -> Nested Loop (cost=0.42..6325.65 rows=98 width=637) (actual
+            time=34.853..34.853 rows=0 loops=1)
+            -> Seq Scan on bmsql_warehouse (cost=0.00..1.10 rows=10
+            width=80) (actual time=0.002..0.015 rows=10 loops=1)
+            -> Index Scan using bmsql_customer_pkey on bmsql_customer
+            (cost=0.42..632.36 rows=10 width=557) (actual time=3.471..3.471 rows=0
+            loops=10)
+            Index Cond: ((c_w_id = bmsql_warehouse.w_id) AND (c_id =
+            0))
+            Planning time: 0.292 ms
+            Execution time: 34.917 ms
+            (9 rows)
+
+Generating an explain plan
+
+            benchmarksql=# EXPLAIN (FORMAT XML) SELECT * FROM bmsql_customer;
+            QUERY PLAN
+            ----------------------------------------------------------
+            <explain xmlns="http://www.postgresql.org/2009/explain">+
+            <Query> +
+            <Plan> +
+            <Node-Type>Seq Scan</Node-Type> +
+            <Relation-Name>bmsql_customer</Relation-Name> +
+            <Alias>bmsql_customer</Alias> +
+            <Startup-Cost>0.00</Startup-Cost> +
+            <Total-Cost>28218.00</Total-Cost> +
+            <Plan-Rows>300000</Plan-Rows> +
+            <Plan-Width>559</Plan-Width> +
+            </Plan> +
+            </Query> +
+            </explain>
+            (1 row)
+
+            benchmarksql=# EXPLAIN(FORMAT YAML) SELECT * FROM bmsql_customer;
+            QUERY PLAN
+            -------------------------------------
+            - Plan: +
+            Node Type: "Seq Scan" +
+            Relation Name: "bmsql_customer"+
+            Alias: "bmsql_customer" +
+            Startup Cost: 0.00 +
+            Total Cost: 28218.00 +
+            Plan Rows: 300000 +
+            Plan Width: 559
+            (1 row)
+
+            benchmarksql=# EXPLAIN(FORMAT JSON) SELECT * FROM bmsql_customer;
+            QUERY PLAN
+            ------------------------------------------
+            [ +
+            { +
+            "Plan": { +
+            "Node Type": "Seq Scan", +
+            "Relation Name": "bmsql_customer",+
+            "Alias": "bmsql_customer", +
+            "Startup Cost": 0.00, +
+            "Total Cost": 28218.00, +
+            "Plan Rows": 300000, +
+            "Plan Width": 559 +
+            } +
+            } +
+            ]
+            (1 row)
+
+Computing basic cost
+            benchmarksql=# SHOW seq_page_cost;
+            seq_page_cost
+            ---------------
+            1
+            (1 row) benchmarksql=# EXPLAIN SELECT * FROM bmsql_customer;
+            QUERY PLAN
+            -------------------------------------------------------------------
+            ------
+            Seq Scan on bmsql_customer (cost=0.00..28218.00 rows=300000
+            width=559)
+            (1 row)
+
+            benchmarksql=# SET seq_page_cost TO 2;
+            SET
+            benchmarksql=# EXPLAIN SELECT * FROM bmsql_customer;
+            QUERY PLAN
+            -------------------------------------------------------------------
+            ------
+            Seq Scan on bmsql_customer (cost=0.00..53436.00 rows=300000
+            width=559)
+            (1 row)
+
+            benchmarksql=# EXPLAIN SELECT * FROM bmsql_customer WHERE c_id = 1;
+            QUERY PLAN
+            ------------------------------------------------------------
+            ------------------------------------
+            Index Scan using bmsql_customer_pkey on bmsql_customer
+            (cost=0.42..7096.24 rows=98 width=557)
+            Index Cond: (c_id = 1)
+            (2 rows)
+
+            benchmarksql=# SELECT reltuples, relpages FROM pg_class WHERE
+            relname='bmsql_customer';
+            reltuples | relpages
+            -----------+----------
+            300000 | 25218
+            (1 row)
+
+            benchmarksql=# SELECT (25218*2 + 0.01*300000) seq_scan_cost;
+            seq_scan_cost
+            ---------------
+            53436.00
+            (1 row)
+
+            benchmarksql=# EXPLAIN SELECT * FROM bmsql_customer WHERE
+            c_city = 'San Mateo';
+            QUERY PLAN
+            -------------------------------------------------------------------
+            -
+            Seq Scan on bmsql_customer (cost=0.00..54186.00 rows=9 width=559)
+            Filter: ((c_city)::text = 'San Mateo'::text)
+            (2 rows)
+
+            benchmarksql=# SELECT amname, amcostestimate FROM pg_am;
+            amname | amcostestimate
+            --------+------------------
+            btree | btcostestimate
+            hash | hashcostestimate
+            gist | gistcostestimate
+            gin | gincostestimate
+            spgist | spgcostestimate
+            brin | brincostestimate
+            (6 rows)
+
+Running sequential scans
+
+            benchmarksql=# EXPLAIN SELECT * FROM bmsql_customer;
+            QUERY PLAN
+            -------------------------------------------------------------------
+            ------
+            Seq Scan on bmsql_customer (cost=0.00..28218.00 rows=300000
+            width=559)
+            (1 row)
+
+            benchmarksql=# EXPLAIN SELECT * FROM bmsql_customer WHERE c_city =
+            'San Mateo';
+            QUERY PLAN
+            -------------------------------------------------------------------
+            ------
+            Bitmap Heap Scan on bmsql_customer (cost=4.49..40.09 rows=9
+            width=559)
+            Recheck Cond: ((c_city)::text = 'San Mateo'::text)
+            -> Bitmap Index Scan on city_idx (cost=0.00..4.49 rows=9 width=0)
+            Index Cond: ((c_city)::text = 'San Mateo'::text)
+            (4 rows)
+
+            benchmarksql=# SET random_page_cost TO 10000;
+            SET
+            benchmarksql=# EXPLAIN SELECT * FROM bmsql_customer WHERE c_city =
+            'San Mateo';
+            QUERY PLAN
+            -------------------------------------------------------------------
+            -
+            Seq Scan on bmsql_customer (cost=0.00..28961.00 rows=9 width=557)
+            Filter: ((c_city)::text = 'San Mateo'::text)
+            (2 rows)
+
+Running bitmap heap and index scan
+
+            benchmarksql=# EXPLAIN SELECT * FROM bmsql_customer WHERE
+            c_city = 'San Mateo';
+            QUERY PLAN
+            -------------------------------------------------------------------
+            ------
+            Bitmap Heap Scan on bmsql_customer (cost=4.49..40.09rows=9
+            width=559)
+            Recheck Cond: ((c_city)::text = 'San Mateo'::text)
+            -> Bitmap Index Scan on city_idx (cost=0.00..4.49 rows=9 width=0)
+            Index Cond: ((c_city)::text = 'San Mateo'::text)
+            (4 rows)
+
+            benchmarksql=# EXPLAIN ANALYZE SELECT * FROM bmsql_customer
+            WHERE c_city = 'San Mateo';
+            QUERY PLAN
+            --------------------------------------------------------------
+            ------------------------------------------------
+            Bitmap Heap Scan on bmsql_customer (cost=4.49..40.09 rows=9
+            width=559)
+            (actual time=4.243..4.243 rows=0 loops=1)
+            Recheck Cond: ((c_city)::text = 'San Mateo'::text)
+            -> Bitmap Index Scan on city_idx (cost=0.00..4.49 rows=9 width=0)
+            (actual time=4.239..4.239 rows=0 loops=1)
+            Index Cond: ((c_city)::text = 'San Mateo'::text)
+            Planning time: 0.092 ms
+            Execution time: 4.278 ms
+            (6 rows)
+
+            benchmarksql=# SET default_statistics_target TO 10000;
+            SET
+            benchmarksql=# ANALYZE bmsql_customer ;
+            ANALYZE
+            benchmarksql=# EXPLAIN SELECT * FROM bmsql_customer WHERE
+            c_city = 'San Mateo';
+            QUERY PLAN
+            -------------------------------------------------------------------
+            --
+            Index Scan using city_idx on bmsql_customer (cost=0.42..28.53
+            rows=6
+            width=558)
+            Index Cond: ((c_city)::text = 'San Mateo'::text)
+            (2 rows)
+
+            benchmarksql=# EXPLAIN SELECT * FROM bmsql_customer WHERE c_city = 'San Mateo' or c_city='San Francisco';
+            QUERY PLAN
+            ---------------------------------------------------------------------------
+            ------------------------
+            Bitmap Heap Scan on bmsql_customer (cost=8.94..56.34 rows=12 width=558)
+            Recheck Cond: (((c_city)::text = 'San Mateo'::text) OR ((c_city)::text =
+            'San Francisco'::text))
+            -> BitmapOr (cost=8.94..8.94 rows=12 width=0)
+            -> Bitmap Index Scan on city_idx (cost=0.00..4.47 rows=6 width=0)
+            Index Cond: ((c_city)::text = 'San Mateo'::text)
+            -> Bitmap Index Scan on city_idx (cost=0.00..4.47 rows=6 width=0)
+            Index Cond: ((c_city)::text = 'San Francisco'::text)
+            (7 rows)
+
+            benchmarksql=# EXPLAIN SELECT * FROM bmsql_customer WHERE c_city IN
+            ('San Mateo','San Francisco');
+            QUERY PLAN
+            -----------------------------------------------------------------------
+            ---------------
+            Bitmap Heap Scan on bmsql_customer (cost=8.94..56.30 rows=12
+            width=558)
+            Recheck Cond: ((c_city)::text = ANY ('{"San Mateo","San
+            Francisco"}'::text[]))
+            -> Bitmap Index Scan on city_idx (cost=0.00..8.94 rows=12 width=0)
+            Index Cond: ((c_city)::text = ANY ('{"San Mateo","San
+            Francisco"}'::text[]))
+            (4 rows)
+
+Aggregate and hash aggregate
+
+            benchmarksql=# EXPLAIN SELECT max(i_price) FROM bmsql_item;
+            QUERY PLAN
+            -------------------------------------------------------------------
+            -----
+            Aggregate (cost=2549.00..2549.01 rows=1 width=6)
+            -> Seq Scan on bmsql_item (cost=0.00..2299.00 rows=100000
+            width=6)
+            (2 rows)
+
+            benchmarksql=# CREATE INDEX pric_idx ON bmsql_item(i_price DESC);
+            CREATE INDEX
+            benchmarksql=# EXPLAIN SELECT max(i_price) FROM bmsql_item;
+            QUERY PLAN
+            -------------------------------------------------------------------
+            -----------------------------------
+            Result (cost=0.32..0.33 rows=1 width=0)
+            InitPlan 1 (returns $0)
+            -> Limit (cost=0.29..0.32 rows=1 width=6)
+            -> Index Only Scan using pric_idx on bmsql_item
+            (cost=0.29..2854.29 rows=100000 width=6)
+            Index Cond: (i_price IS NOT NULL)
+            (5 rows)
+
+            benchmarksql=# EXPLAIN SELECT min(i_price) FROM bmsql_item;
+            QUERY PLAN
+            -------------------------------------------------------------------
+            Result (cost=0.32..0.33 rows=1 width=0)
+            InitPlan 1 (returns $0)
+            -> Limit (cost=0.29..0.32 rows=1 width=6)
+            -> Index Only Scan Backward using pric_idx on
+            bmsql_item (cost=0.29..2854.29 rows=100000 width=6)
+            Index Cond: (i_price IS NOT NULL)
+            (5 rows)
+
+            benchmarksql=# EXPLAIN SELECT COUNT(*), c_zip FROM bmsql_customer
+            GROUP BY c_zip;
+            QUERY PLAN
+            -------------------------------------------------------------------
+            -----------
+            HashAggregate (cost=29718.00..29817.39 rows=9939 width=10)
+            Group Key: c_zip
+            -> Seq Scan on bmsql_customer (cost=0.00..28218.00 rows=300000
+            width=10)
+            (3 rows)
+
+            benchmarksql=# CREATE INDEX zip_idx ON bmsql_customer(c_zip);
+            CREATE INDEX
+            benchmarksql=# EXPLAIN SELECT COUNT(*), c_zip FROM bmsql_customer
+            GROUP BY c_zip;
+            QUERY PLAN
+            -------------------------------------------------------------------
+            GroupAggregate (cost=0.42..10731.97 rows=9955 width=10)
+            Group Key: c_zip
+            -> Index Only Scan using zip_idx on bmsql_customer
+            (cost=0.42..9132.42 rows=300000 width=10)
+            (3 rows)
+
+            postgres=# SELECT * FROM pg_aggregate WHERE aggfnoid::text ~ 'max'
+            LIMIT 1;
+            -[ RECORD 1 ]----+-------------------
+            aggfnoid | pg_catalog.max
+            aggkind | n
+            aggnumdirectargs | 0
+            aggtransfn | int8larger
+            aggfinalfn | -
+            aggmtransfn | -
+            aggminvtransfn | -
+            aggmfinalfn | -
+            aggfinalextra | f
+            aggmfinalextra | f
+            aggsortop | 413
+            aggtranstype | 20
+            aggtransspace | 0
+            aggmtranstype | 0
+            aggmtransspace | 0
+            agginitval |
+            aggminitval |
+
+            postgres=# SELECT * FROM pg_aggregate WHERE aggfnoid::text ~ 'avg'
+            LIMIT 1;
+            -[ RECORD 1 ]----+-------------------
+            aggfnoid | pg_catalog.avg
+            aggkind | n
+            aggnumdirectargs | 0
+            aggtransfn | int8_avg_accum
+            aggfinalfn | numeric_poly_avg
+            aggmtransfn | int8_avg_accum
+            aggminvtransfn | int8_avg_accum_inv
+            aggmfinalfn | numeric_poly_avg
+            aggfinalextra | f
+            aggmfinalextra | f
+            aggsortop | 0
+            aggtranstype | 2281
+            aggtransspace | 48
+            aggmtranstype | 2281
+            aggmtransspace | 48
+            agginitval |
+            aggminitval |
+
+            benchmarksql=# EXPLAIN SELECT c_zip, COUNT(*) OVER(PARTITION BY c_zip)
+            FROM bmsql_customer;
+            QUERY PLAN
+            -----------------------------------------------------------------------
+            ---------------------------
+            WindowAgg (cost=0.42..13632.42 rows=300000 width=10)
+            -> Index Only Scan using zip_idx on bmsql_customer
+            (cost=0.42..9132.42 rows=300000 width=10)
+            (2 rows)
+
+Running CTE scan
+
+            benchmarksql=# EXPLAIN WITH costly_products AS (
+            SELECT i_name FROM bmsql_item WHERE i_price BETWEEN 10 AND 100
+            ) SELECT * FROM costly_products;
+            QUERY PLAN
+            -------------------------------------------------------------------
+            -------------
+            CTE Scan on costly_products (cost=2799.00..4619.68 rows=91034
+            width=40)
+            CTE costly_products
+            -> Seq Scan on bmsql_item (cost=0.00..2799.00 rows=91034
+            width=26)
+            Filter: ((i_price >= '10'::numeric) AND (i_price <=
+            '100'::numeric))
+            (4 rows)
+
+            postgres=# WITH costly_products AS (
+            SELECT i_name FROM bmsql_item WHERE i_price BETWEEN 10 AND 100
+            ),
+            not_costly_products AS (
+            SELECT i_name FROM bmsql_item WHERE i_price BETWEEN 1 AND 9)
+            SELECT COUNT(*), 'costly products' FROM costly_products
+            UNION
+            SELECT COUNT(*), 'not costly products' FROM not_costly_products;
+            count | ?column?
+            -------+---------------------
+            8018 | not costly products
+            90986 | costly products
+            (2 rows)
+
+            postgres=# WITH RECURSIVE recur(i) AS (SELECT 1 UNION SELECT i+1
+            FROM recur WHERE i<5) SELECT * FROM recur;
+            t
+            ---
+            1
+            2
+            3
+            4
+            5
+            (5 rows)
+
+            benchmarksql=# EXPLAIN ANALYZE WITH costly_products AS (
+            SELECT i_name,i_price FROM bmsql_item
+            ) SELECT * FROM costly_products WHERE i_price BETWEEN 10 AND 100 ;
+            QUERY PLAN
+            -----------------------------------------------------------------------
+            ----------------------------------------------------
+            CTE Scan on costly_products (cost=2299.00..4799.00 rows=500 width=40)
+            (actual time=0.026..174.884 rows=90991 loops=1)
+            Filter: ((i_price >= '10'::numeric) AND (i_price <=
+            '100'::numeric))
+            Rows Removed by Filter: 9009
+            CTE costly_products
+            -> Seq Scan on bmsql_item (cost=0.00..2299.00 rows=100000
+            width=26) (actual time=0.011..37.172 rows=100000 loops=1)
+            Planning time: 0.160 ms
+            Execution time: 199.404 ms
+            (7 rows)
+
+            benchmarksql=# EXPLAIN ANALYZE SELECT * FROM (SELECT i_name, i_price
+            FROM bmsql_item) as costly_products WHERE i_price BETWEEN 10 AND 100 ;
+            QUERY PLAN
+            -----------------------------------------------------------------------
+            ------------------------------------------
+            Seq Scan on bmsql_item (cost=0.00..2799.00 rows=91177 width=26)
+            (actual time=0.011..79.378 rows=90991 loops=1)
+            Filter: ((i_price >= '10'::numeric) AND (i_price <=
+            '100'::numeric))
+            Rows Removed by Filter: 9009
+            Planning time: 0.340 ms
+            Execution time: 85.402 ms
+            (5 rows)
+            Time: 86.286 ms
+
+            WITH RECURSIVE recur AS (
+            Initial values for the recursive statements
+            UNION
+            Recursive statements which runs until the condition satisfies
+            )
+            SELECT * FROM recur;
+
+            WITH RECURSIVE recur(i) AS (
+            SELECT 1
+            UNION
+            SELECT i+1 FROM recur WHERE i<5) SELECT * FROM recur;
+
+            benchmarksql=# EXPLAIN ANALYZE WITH RECURSIVE recur(i) AS (SELECT 1
+            UNION SELECT i+1 FROM recur WHERE i<5) SELECT * FROM recur;
+            QUERY PLAN
+            -----------------------------------------------------------------------
+            ----------------------------------------------------
+            CTE Scan on recur (cost=2.95..3.57 rows=31 width=4) (actual
+            time=0.010..0.037 rows=5 loops=1)
+            CTE recur
+            -> Recursive Union (cost=0.00..2.95 rows=31 width=4) (actual
+            time=0.006..0.031 rows=5 loops=1)
+            -> Result (cost=0.00..0.01 rows=1 width=0) (actual
+            time=0.001..0.002 rows=1 loops=1)
+            -> WorkTable Scan on recur recur_1 (cost=0.00..0.23 rows=3
+            width=4) (actual time=0.002..0.003 rows=1 loops=5)
+            Filter: (i < 5)
+            Rows Removed by Filter: 0
+            Planning time: 0.108 ms
+            Execution time: 0.088 ms
+            (9 rows)
+            Time: 0.736 ms
+
+Nesting loops
+
+            benchmarksql=# EXPLAIN SELECT w_name, c_first FROM bmsql_warehouse,
+            bmsql_customer WHERE w_id=c_w_id;
+            QUERY PLAN
+            -----------------------------------------------------------------------
+            --------------------------------------
+            Nested Loop (cost=0.42..13743.32 rows=300000 width=21)
+            -> Seq Scan on bmsql_warehouse (cost=0.00..1.10 rows=10 width=12)
+            -> Index Only Scan using bmsql_customer_idx1 on bmsql_customer
+            (cost=0.42..1074.22 rows=30000 width=17)
+            Index Cond: (c_w_id = bmsql_warehouse.w_id)
+            (4 rows)
+
+            benchmarksql=# EXPLAIN ANALYZE SELECT w_name,c_first FROM
+            bmsql_warehouse, bmsql_customer WHERE w_id=c_w_id;
+            QUERY PLAN
+            --------------------------------------------------------------------
+            ---------------------------------------------------------------------------
+            --------------
+            Nested Loop (cost=0.42..13743.32 rows=300000 width=21) (actual
+            time=0.039..165.479 rows=300000 loops=1)
+            -> Seq Scan on bmsql_warehouse (cost=0.00..1.10 rows=10 width=12)
+            (actual time=0.004..0.016 rows=10loops=1)
+            -> Index Only Scan using bmsql_customer_idx1 on bmsql_customer
+            (cost=0.42..1074.22 rows=30000 width=17) (actual time=0.016..10.889
+            rows=30000loops=10)
+            Index Cond: (c_w_id = bmsql_warehouse.w_id)
+            Heap Fetches: 0
+            Planning time: 0.374 ms
+            Execution time: 182.885 ms
+            (7 rows)
+
+            benchmarksql=# EXPLAIN SELECT * FROM test t1, test2 t2 WHERE t1.t=t2.t;
+            QUERY PLAN
+            -----------------------------------------------------------------------
+            --------------
+            Nested Loop (cost=0.14..18455.00 rows=109 width=8)
+            -> Seq Scan on test t1 (cost=0.00..1443.00 rows=100000 width=4)
+            -> Index Only Scan using test2_idx on test2 t2 (cost=0.14..0.16
+            rows=1 width=4)
+            Index Cond: (t = t1.t)
+            (4 rows)
+
+Working with hash and merge join
+
+            benchmarksql=# EXPLAIN SELECT SUM(h_amount), c_id FROM bmsql_history,
+            bmsql_customer WHERE h_c_id = c_id GROUP BY c_id;
+            QUERY PLAN
+            -----------------------------------------------------------------------
+            --------------------------------------------
+            HashAggregate (cost=561095.19..561132.69 rows=3000 width=9)
+            Group Key: bmsql_customer.c_id
+            -> Hash Join (cost=11453.42..411194.93 rows=29980051 width=9)
+            Hash Cond: (bmsql_customer.c_id = bmsql_history.h_c_id)
+            -> Index Only Scan using bmsql_customer_pkey on
+            bmsql_customer (cost=0.42..9132.42 rows=300000 width=4)
+            -> Hash (cost=6238.00..6238.00 rows=300000 width=9)
+            -> Seq Scan on bmsql_history (cost=0.00..6238.00
+            rows=300000 width=9)
+            (7 rows)
+
+
+            benchmarksql=# EXPLAIN SELECT w_name, d_name FROM bmsql_district,
+            bmsql_warehouse WHERE w_id = d_w_id;
+            QUERY PLAN
+            -----------------------------------------------------------------------
+            ------
+            Merge Join (cost=7.59..9.14 rows=100 width=17)
+            Merge Cond: (bmsql_warehouse.w_id = bmsql_district.d_w_id)
+            -> Sort (cost=1.27..1.29 rows=10 width=12)
+            Sort Key: bmsql_warehouse.w_id
+            -> Seq Scan on bmsql_warehouse (cost=0.00..1.10 rows=10
+            width=12)
+            -> Sort (cost=6.32..6.57 rows=100 width=13)
+            Sort Key: bmsql_district.d_w_id
+            -> Seq Scan on bmsql_district (cost=0.00..3.00 rows=100
+            width=13)
+            (8 rows)
+
+            benchmarksql=# SELECT relpages, relname FROM pg_class WHERE relname IN
+            ('bmsql_history', 'bmsql_customer');
+            relpages | relname
+            ----------+----------------
+            3238 | bmsql_history
+            25218 | bmsql_customer
+            (2 rows)
+
+            benchmarksql=# SET seq_page_cost TO 10;
+            SET
+            benchmarksql=# EXPLAIN SELECT SUM(h_amount), c_id FROM bmsql_history,
+            bmsql_customer WHERE h_c_id = c_id GROUP BY c_id;
+            QUERY PLAN
+            -----------------------------------------------------------------------
+            --------------------------------------------------
+            HashAggregate (cost=641453.19..641490.69 rows=3000 width=9)
+            Group Key: bmsql_customer.c_id
+            -> Hash Join (cost=24602.42..491552.93 rows=29980051 width=9)
+            Hash Cond: (bmsql_history.h_c_id = bmsql_customer.c_id)
+            -> Seq Scan on bmsql_history (cost=0.00..35380.00
+            rows=300000 width=9)
+            -> Hash (cost=9132.42..9132.42 rows=300000 width=4)
+            -> Index Only Scan using bmsql_customer_pkey on
+            bmsql_customer (cost=0.42..9132.42 rows=300000 width=4)
+            (7 rows)
+
+
+Grouping
+
+            benchmarksql=# EXPLAIN SELECT COUNT(*), c_city FROM bmsql_customer
+            GROUP BY c_city;
+            QUERY PLAN
+            -------------------------------------------------------------------
+            --------------------------------
+            GroupAggregate (cost=0.42..11570.20 rows=33378 width=16)
+            Group Key: c_city
+            -> Index Only Scan using city_idx on bmsql_customer
+            (cost=0.42..9736.42 rows=300000 width=16)
+            (3 rows)
+
+            benchmarksql=# DROP INDEX city_idx ;
+            DROP INDEX
+            benchmarksql=# EXPLAIN SELECT COUNT(*), c_city FROM bmsql_customer
+            GROUP BY c_city;
+            QUERY PLAN
+            -------------------------------------------------------------------
+            -----------
+            HashAggregate (cost=29718.00..30053.29 rows=33529 width=15)
+            Group Key: c_city
+            -> Seq Scan on bmsql_customer (cost=0.00..28218.00 rows=300000
+            width=15)
+            (3 rows)
+
+            benchmarksql=# SET work_mem TO '64kB';
+            SET
+            benchmarksql=# EXPLAIN SELECT COUNT(*), c_city FROM bmsql_customer
+            GROUP BY c_city;
+            QUERY PLAN
+            -------------------------------------------------------------------
+            -----------------
+            GroupAggregate (cost=70892.40..73477.69 rows=33529 width=15)
+            Group Key: c_city
+            -> Sort (cost=70892.40..71642.40 rows=300000 width=15)
+            Sort Key: c_city
+            -> Seq Scan on bmsql_customer (cost=0.00..28218.00
+            rows=300000 width=15)
+            (5 rows)
+
+Working with set operations
+
+            benchmarksql=# EXPLAIN SELECT c_id FROM bmsql_customer
+            EXCEPT
+            SELECT h_c_id FROM bmsql_history;
+            QUERY PLAN
+            -----------------------------------------------------------------------
+            --------------------------------------------------
+            HashSetOp Except (cost=0.42..22870.42 rows=3000 width=4)
+            -> Append (cost=0.42..21370.42 rows=600000 width=4)
+            -> Subquery Scan on "*SELECT* 1" (cost=0.42..12132.42
+            rows=300000 width=4)
+            -> Index Only Scan using bmsql_customer_pkey on
+            bmsql_customer (cost=0.42..9132.42 rows=300000 width=4)
+            -> Subquery Scan on "*SELECT* 2" (cost=0.00..9238.00
+            rows=300000 width=4)
+            -> Seq Scan on bmsql_history (cost=0.00..6238.00
+            rows=300000 width=4)
+            (6 rows)
+
+            benchmarksql=# EXPLAIN SELECT c_id FROM bmsql_customer INTERSECT SELECT
+            h_c_id FROM bmsql_history;
+            QUERY PLAN
+            -----------------------------------------------------------------------
+            --------------------------------------------------
+            HashSetOp Intersect (cost=0.42..22870.42 rows=3000 width=4)
+            -> Append (cost=0.42..21370.42 rows=600000 width=4)
+            -> Subquery Scan on "*SELECT* 1" (cost=0.42..12132.42
+            rows=300000 width=4)
+            -> Index Only Scan using bmsql_customer_pkey on
+            bmsql_customer (cost=0.42..9132.42 rows=300000 width=4)
+            -> Subquery Scan on "*SELECT* 2" (cost=0.00..9238.00
+            rows=300000 width=4)
+            -> Seq Scan on bmsql_history (cost=0.00..6238.00
+            rows=300000 width=4)
+            (6 rows)
+
+            benchmarksql=# set work_mem to '64kB';
+            SET
+            benchmarksql=# EXPLAIN SELECT c_id FROM bmsql_customer INTERSECT SELECT
+            h_c_id FROM bmsql_history;
+            QUERY PLAN
+            -----------------------------------------------------------------------
+            --------------------------------------------------------
+            SetOp Intersect (cost=103566.23..106566.23 rows=3000 width=4)
+            -> Sort (cost=103566.23..105066.23 rows=600000 width=4)
+            Sort Key: "*SELECT* 1".c_id
+            -> Append (cost=0.42..21370.42 rows=600000 width=4)
+            -> Subquery Scan on "*SELECT* 1" (cost=0.42..12132.42
+            rows=300000 width=4)
+            -> Index Only Scan using bmsql_customer_pkey on
+            bmsql_customer (cost=0.42..9132.42 rows=300000 width=4)
+            -> Subquery Scan on "*SELECT* 2" (cost=0.00..9238.00
+            rows=300000 width=4)
+            -> Seq Scan on bmsql_history (cost=0.00..6238.00
+            rows=300000 width=4)
+            (8 rows)
+
+            benchmarksql=# EXPLAIN SELECT w_state FROM bmsql_warehouse INTERSECT SELECT
+            d_state FROM bmsql_district ;
+            QUERY PLAN
+            ---------------------------------------------------------------------------
+            -------
+            HashSetOp Intersect (cost=0.00..5.48 rows=10 width=3)
+            -> Append (cost=0.00..5.20 rows=110 width=3)
+            -> Subquery Scan on "*SELECT* 1" (cost=0.00..1.20 rows=10 width=3)
+            -> Seq Scan on bmsql_warehouse (cost=0.00..1.10 rows=10 width=3)
+            -> Subquery Scan on "*SELECT* 2" (cost=0.00..4.00 rows=100 width=3)
+            -> Seq Scan on bmsql_district (cost=0.00..3.00 rows=100 width=3)
+            (6 rows)
+
+            benchmarksql=# EXPLAIN SELECT d_state FROM bmsql_district
+            INTERSECT
+            SELECT w_state FROM bmsql_warehouse;
+            QUERY PLAN
+            -----------------------------------------------------------------------
+            -----------
+            HashSetOp Intersect (cost=0.00..5.48 rows=10 width=3)
+            -> Append (cost=0.00..5.20 rows=110 width=3)
+            -> Subquery Scan on "*SELECT* 2" (cost=0.00..1.20 rows=10
+            width=3)
+            -> Seq Scan on bmsql_warehouse (cost=0.00..1.10
+            rows=10 width=3)
+            -> Subquery Scan on "*SELECT* 1" (cost=0.00..4.00 rows=100
+            width=3)
+            -> Seq Scan on bmsql_district (cost=0.00..3.00
+            rows=100 width=3)
+            (6 rows)
+
+            benchmarksql=# SET enable_hashagg TO off;
+            SET
+            benchmarksql=# EXPLAIN SELECT d_state FROM bmsql_district
+            INTERSECT
+            SELECT w_state FROM bmsql_warehouse;
+            QUERY PLAN
+            -----------------------------------------------------------------------
+            -----------------
+            SetOp Intersect (cost=8.93..9.48 rows=10 width=3)
+            -> Sort (cost=8.93..9.20 rows=110 width=3)
+            Sort Key: "*SELECT* 2".w_state
+            -> Append (cost=0.00..5.20 rows=110 width=3)
+            -> Subquery Scan on "*SELECT* 2" (cost=0.00..1.20
+            rows=10 width=3)
+            -> Seq Scan on bmsql_warehouse (cost=0.00..1.10
+            rows=10 width=3)
+            -> Subquery Scan on "*SELECT* 1" (cost=0.00..4.00
+            rows=100 width=3)
+            -> Seq Scan on bmsql_district (cost=0.00..3.00
+            rows=100 width=3)
+            (8 rows)
+
+            benchmarksql=# EXPLAIN SELECT d_state FROM bmsql_district
+            EXCEPT
+            SELECT w_state FROM bmsql_warehouse;
+            QUERY PLAN
+            -----------------------------------------------------------------------
+            -----------
+            HashSetOp Except (cost=0.00..5.48 rows=96 width=3)
+            -> Append (cost=0.00..5.20 rows=110 width=3)
+            -> Subquery Scan on "*SELECT* 1" (cost=0.00..4.00 rows=100
+            width=3)
+            -> Seq Scan on bmsql_district (cost=0.00..3.00
+            rows=100 width=3)
+            -> Subquery Scan on "*SELECT* 2" (cost=0.00..1.20 rows=10
+            width=3)
+            -> Seq Scan on bmsql_warehouse (cost=0.00..1.10
+            rows=10 width=3)
+            (6 rows)
+
+            benchmarksql=# EXPLAIN SELECT w_state FROM bmsql_warehouse
+            EXCEPT
+            SELECT d_state FROM bmsql_district ;
+            QUERY PLAN
+            -----------------------------------------------------------------------
+            -----------
+            HashSetOp Except (cost=0.00..5.48 rows=10 width=3)
+            -> Append (cost=0.00..5.20 rows=110 width=3)
+            -> Subquery Scan on "*SELECT* 1" (cost=0.00..1.20 rows=10
+            width=3)
+            -> Seq Scan on bmsql_warehouse (cost=0.00..1.10
+            rows=10 width=3)
+            -> Subquery Scan on "*SELECT* 2" (cost=0.00..4.00 rows=100
+            width=3)
+            -> Seq Scan on bmsql_district (cost=0.00..3.00
+            rows=100 width=3)
+            (6 rows)
+
+            benchmarksql=# EXPLAIN SELECT w_state FROM bmsql_warehouse
+            UNION
+            SELECT d_state FROM bmsql_district;
+            QUERY PLAN
+            -----------------------------------------------------------------------
+            -----
+            HashAggregate (cost=5.48..6.58 rows=110 width=3)
+            Group Key: bmsql_warehouse.w_state
+            -> Append (cost=0.00..5.20 rows=110 width=3)
+            -> Seq Scan on bmsql_warehouse (cost=0.00..1.10 rows=10
+            width=3)
+            -> Seq Scan on bmsql_district (cost=0.00..3.00 rows=100
+            width=3)
+            (5 rows)
+
+            benchmarksql=# SET enable_hashagg TO off;
+            SET
+            benchmarksql=# EXPLAIN SELECT w_state FROM bmsql_warehouse
+            UNION
+            SELECT d_state FROM bmsql_district;
+            QUERY PLAN
+            -----------------------------------------------------------------------
+            -----------
+            Unique (cost=8.93..9.48 rows=110 width=3)
+            -> Sort (cost=8.93..9.20 rows=110 width=3)
+            Sort Key: bmsql_warehouse.w_state
+            -> Append (cost=0.00..5.20 rows=110 width=3)
+            -> Seq Scan on bmsql_warehouse (cost=0.00..1.10
+            rows=10 width=3)
+            -> Seq Scan on bmsql_district (cost=0.00..3.00
+            rows=100 width=3)
+            (6 rows)
+
+Working on semi and anti joins
+
+            benchmarksql=# EXPLAIN SELECT * FROM bmsql_item WHERE EXISTS (SELECT
+            true FROM bmsql_stock WHERE i_id=s_i_id);
+            QUERY PLAN
+            -----------------------------------------------------------------------
+            ---------------------------------------
+            Hash Semi Join (cost=42387.40..55508.40 rows=100000 width=73)
+            Hash Cond: (bmsql_item.i_id = bmsql_stock.s_i_id)
+            -> Seq Scan on bmsql_item (cost=0.00..2299.00 rows=100000
+            width=73)
+            -> Hash (cost=25980.41..25980.41 rows=999999 width=4)
+            -> Index Only Scan using bmsql_stock_pkey on bmsql_stock
+            (cost=0.42..25980.41 rows=999999 width=4)
+            (5 rows)
+
+            benchmarksql=# EXPLAIN SELECT * FROM bmsql_item WHERE NOT EXISTS
+            (SELECT true FROM bmsql_stock WHERE i_id=s_i_id);
+            QUERY PLAN
+            -----------------------------------------------------------------------
+            ---------------------------------------
+            Hash Anti Join (cost=38480.40..44154.40 rows=1 width=73)
+            Hash Cond: (bmsql_item.i_id = bmsql_stock.s_i_id)
+            -> Seq Scan on bmsql_item (cost=0.00..2299.00 rows=100000
+            width=73)
+            -> Hash (cost=25980.41..25980.41 rows=999999 width=4)
+            -> Index Only Scan using bmsql_stock_pkey on bmsql_stock
+            (cost=0.42..25980.41 rows=999999 width=4)
+            (5 rows)
+
+            benchmarksql=# EXPLAIN SELECT * FROM bmsql_item WHERE i_id = 10 AND
+            EXISTS (SELECT true FROM bmsql_stock WHERE i_id=s_i_id);
+            QUERY PLAN
+            -----------------------------------------------------------------------
+            -----------------------------
+            Nested Loop Semi Join (cost=0.72..18488.85 rows=1 width=73)
+            -> Index Scan using bmsql_item_pkey on bmsql_item (cost=0.29..8.31
+            rows=1 width=73)
+            Index Cond: (i_id = 10)
+            -> Index Only Scan using bmsql_stock_pkey on bmsql_stock
+            (cost=0.42..18480.52 rows=10 width=4)
+            Index Cond: (s_i_id = 10)
+            (5 rows)
